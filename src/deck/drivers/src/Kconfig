@@ -532,3 +532,11 @@ config DECK_COLORLED
     default y
     help
         Enables the support for Color LED deck.
+
+config DECK_PHOTODIODE
+    bool "8-channel photodiode gradient deck (ADS7953, SPI, IO_4 CS)"
+    default n
+    help
+      Enable driver for the custom 8-channel photodiode expansion deck.
+      Uses IO_4 as SPI chip-select — incompatible with the micro-SD deck.
+      Compatible with Flow Deck v2 and Loco Positioning Deck.
