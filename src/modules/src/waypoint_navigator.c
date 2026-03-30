@@ -55,6 +55,9 @@
 
 #include "waypoint_navigator.h"
 
+/* Forward declaration — handleHolding calls handleTransitioning directly */
+static WpNavSetpoint handleTransitioning(void);
+
 /* ──────────────────────────────────────────────────────────────────────────
  * Tunable parameters — match Teensy defaults, adjustable from Python
  * ────────────────────────────────────────────────────────────────────────── */

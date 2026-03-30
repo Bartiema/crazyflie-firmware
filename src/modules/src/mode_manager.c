@@ -53,6 +53,8 @@
 #include "commander.h"
 #include "stabilizer_types.h"
 #include "estimator.h"
+#include "estimator_kalman.h"
+#include "sensfusion6.h"
 #include "log.h"
 #include "param.h"
 #include "debug.h"
@@ -84,6 +86,7 @@ static float navAltTarget   = 1.0f;   /* hold altitude via Flow Deck */
 static float navMaxVel      = 0.30f;  /* forward velocity clamp (m/s) */
 static float navMaxYaw      = 60.0f;  /* yaw rate clamp (deg/s) */
 static float navFwdSpeed    = 0.20f;  /* forward speed when approaching */
+static float navYawGain     = 2.0f;   /* heading error (deg) → yaw rate (deg/s) */
 static uint32_t pdTimeoutMs = 500U;   /* revert MANUAL if no PD data */
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -254,15 +257,26 @@ static void modeTask(void *param)
         /* ── 4. Process new spectrum ────────────────────────────────────── */
         if (newSpectrum && numTrackedFreqs > 0) {
 
-            /* Read current drone state (Flow Deck odometry) */
+            /* Read current drone state (read-only, safe to call from any task).
+             * estimatorKalmanGetEstimatedPos() is the correct getter for position
+             * when the Kalman estimator is active (required with Flow Deck v2).
+             * Attitude (yaw) is always available via the attitude log variables
+             * but we access it through the state struct directly here. */
             float currentYaw = 0.0f;
-            float posX = 0.0f, posY = 0.0f;
-#ifdef CONFIG_DECK_ZRANGER2
-            /* Position from state estimator — available when Flow Deck v2 fitted */
-            posX = stateEstimatorGetX();
-            posY = stateEstimatorGetY();
-            currentYaw = stateEstimatorGetYaw();  /* degrees */
-#endif
+            float posX       = 0.0f;
+            float posY       = 0.0f;
+
+            {
+                point_t pos;
+                estimatorKalmanGetEstimatedPos(&pos);
+                posX = pos.x;
+                posY = pos.y;
+
+                /* Yaw is available from the sensfusion / attitude estimator */
+                float roll = 0.0f, pitch = 0.0f, yaw = 0.0f;
+                sensfusion6GetEulerRPY(&roll, &pitch, &yaw);
+                currentYaw = yaw;
+            }
 
             for (int f = 0; f < numTrackedFreqs; f++) {
                 FreqState *fs = &freqStates[f];
@@ -379,7 +393,8 @@ static void modeTask(void *param)
                     float fwdVel = 0.0f;
                     if (fs->bearingValid &&
                         (navSp.state == WP_NAV_APPROACHING ||
-                         navSp.state == WP_NAV_NAVIGATING)) {
+                         navSp.state == WP_NAV_ALIGNING ||
+                         navSp.state == WP_NAV_SEARCHING)) {
                         fwdVel = navFwdSpeed;
                     }
                     if (navSp.state == WP_NAV_HOLDING ||
@@ -433,9 +448,6 @@ void modeManagerInit(void)
 }
 
 DroneMode modeManagerGetMode(void) { return currentMode; }
-
-/* Yaw P-gain: heading error (deg) → yaw rate (deg/s) */
-static float navYawGain = 2.0f;
 
 /* ── PARAM ─────────────────────────────────────────────────────────────── */
 PARAM_GROUP_START(nav)
