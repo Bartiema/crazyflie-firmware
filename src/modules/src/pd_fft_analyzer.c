@@ -16,6 +16,7 @@
 #define DEBUG_MODULE "PDFFT"
 
 #include <string.h>
+#include <stdlib.h>
 #include <math.h>
 
 #include "FreeRTOS.h"

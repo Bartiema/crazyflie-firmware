@@ -53,11 +53,15 @@
  * Hardware constants
  * ────────────────────────────────────────────────────────────────────────── */
 
-/** SPI clock in Hz. ADS7953 max is 20 MHz; 10 MHz gives comfortable margin. */
-#define ADS7953_SPI_SPEED_HZ    10000000UL
+/** SPI baudrate — ADS7953 max 20 MHz; SPI_BAUDRATE_21MHZ is the fastest
+ *  standard constant available and sits within the ADS7953 spec. */
+#define ADS7953_SPI_BAUDRATE    SPI_BAUDRATE_21MHZ
 
 /** Chip-select pin — must match schematic note: "We will use IO_4 as our CS pin." */
 #define PD_CS_PIN               DECK_GPIO_IO4
+
+/** Photodiode sampling rate in Hz. */
+#define PD_SAMPLE_RATE_HZ       200
 
 /** Total SPI frames per burst (1 dummy discard + 8 channel reads). */
 #define ADS7953_BURST_FRAMES    9
@@ -123,7 +127,7 @@ static void adsWriteCommand(uint16_t cmd)
     uint8_t tx[2] = { (uint8_t)(cmd >> 8), (uint8_t)(cmd & 0xFF) };
     uint8_t rx[2];
 
-    spiBeginTransaction(ADS7953_SPI_SPEED_HZ);
+    spiBeginTransaction(ADS7953_SPI_BAUDRATE);
     digitalWrite(PD_CS_PIN, LOW);
     spiExchange(2, tx, rx);
     digitalWrite(PD_CS_PIN, HIGH);
@@ -152,7 +156,7 @@ static void adsReadAllChannels(float out[PD_CHANNEL_COUNT])
         tx[i * 2 + 1] = (uint8_t)(ADS7953_CMD_CONTINUE & 0xFF);
     }
 
-    spiBeginTransaction(ADS7953_SPI_SPEED_HZ);
+    spiBeginTransaction(ADS7953_SPI_BAUDRATE);
     digitalWrite(PD_CS_PIN, LOW);
     spiExchange(ADS7953_BURST_BYTES, tx, rx);
     digitalWrite(PD_CS_PIN, HIGH);
