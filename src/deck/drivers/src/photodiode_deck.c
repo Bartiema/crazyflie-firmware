@@ -105,7 +105,7 @@
  * Shared state
  * ────────────────────────────────────────────────────────────────────────── */
 
-static float     pdValues[PD_CHANNEL_COUNT];
+static uint16_t  pdValues[PD_CHANNEL_COUNT];
 static bool      pdReady = false;
 
 static StaticSemaphore_t pdMutexBuf;
@@ -145,7 +145,7 @@ static void adsWriteCommand(uint16_t cmd)
  * We also cross-check the channel-ID nibble in each returned frame to
  * detect any de-synchronisation with the auto-scan sequence.
  */
-static void adsReadAllChannels(float out[PD_CHANNEL_COUNT])
+static void adsReadAllChannels(uint16_t out[PD_CHANNEL_COUNT])
 {
     uint8_t tx[ADS7953_BURST_BYTES];
     uint8_t rx[ADS7953_BURST_BYTES];
@@ -162,21 +162,15 @@ static void adsReadAllChannels(float out[PD_CHANNEL_COUNT])
     digitalWrite(PD_CS_PIN, HIGH);
     spiEndTransaction();
 
-    /* Decode frames 1–8 (skip frame 0 — stale pipeline result) */
-    for (int ch = 0; ch < PD_CHANNEL_COUNT; ch++) {
-        int offset    = (ch + 1) * 2;                          /* skip frame 0 */
-        uint16_t word = ((uint16_t)rx[offset] << 8) | rx[offset + 1];
+    /* Decode frames */
+    for (int word_idx = 0; word_idx < ADS7953_BURST_FRAMES / 2; word_idx++) {
+        uint16_t word = ((uint16_t)rx[word_idx] << 8) | rx[word_idx + 1];
 
         /* Bits [15:12]: channel ID returned by ADS7953 */
         uint8_t  reported_ch = (word >> 12) & 0x0F;
-        uint16_t raw         = word & 0x0FFF;                  /* 12-bit result */
-
-        if (reported_ch != (uint8_t)ch) {
-            /* Sequence mismatch — ADC de-synced. Return zeros this frame. */
-            DEBUG_PRINT("PD: channel mismatch @ ch%d (got %d)\n", ch, reported_ch);
-            out[ch] = 0.0f;
-        } else {
-            out[ch] = (float)raw / 4095.0f;                    /* normalise [0,1] */
+        uint16_t raw         = word & 0x0FFF;        
+        if (reported_ch < 8) {
+            out[reported_ch] = raw;                   
         }
     }
 }
@@ -210,7 +204,7 @@ static void pdTask(void *param)
     TickType_t lastWake = xTaskGetTickCount();
 
     while (1) {
-        float buf[PD_CHANNEL_COUNT];
+        uint16_t buf[PD_CHANNEL_COUNT];
         adsReadAllChannels(buf);
 
         /* Update shared values under mutex */
@@ -294,14 +288,14 @@ bool pdDeckIsReady(void)
  * ────────────────────────────────────────────────────────────────────────── */
 
 LOG_GROUP_START(pd)
-    LOG_ADD(LOG_FLOAT, ch0, &pdValues[0])
-    LOG_ADD(LOG_FLOAT, ch1, &pdValues[1])
-    LOG_ADD(LOG_FLOAT, ch2, &pdValues[2])
-    LOG_ADD(LOG_FLOAT, ch3, &pdValues[3])
-    LOG_ADD(LOG_FLOAT, ch4, &pdValues[4])
-    LOG_ADD(LOG_FLOAT, ch5, &pdValues[5])
-    LOG_ADD(LOG_FLOAT, ch6, &pdValues[6])
-    LOG_ADD(LOG_FLOAT, ch7, &pdValues[7])
+    LOG_ADD(LOG_UINT16, ch0, &pdValues[0])
+    LOG_ADD(LOG_UINT16, ch1, &pdValues[1])
+    LOG_ADD(LOG_UINT16, ch2, &pdValues[2])
+    LOG_ADD(LOG_UINT16, ch3, &pdValues[3])
+    LOG_ADD(LOG_UINT16, ch4, &pdValues[4])
+    LOG_ADD(LOG_UINT16, ch5, &pdValues[5])
+    LOG_ADD(LOG_UINT16, ch6, &pdValues[6])
+    LOG_ADD(LOG_UINT16, ch7, &pdValues[7])
 LOG_GROUP_STOP(pd)
 
 /* ──────────────────────────────────────────────────────────────────────────
