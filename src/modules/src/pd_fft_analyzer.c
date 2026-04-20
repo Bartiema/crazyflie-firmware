@@ -44,7 +44,7 @@
  * ────────────────────────────────────────────────────────────────────────── */
 
 /* Circular sample buffers — one per channel */
-static float sampleBuf[PD_FFT_CHANNELS][PD_FFT_SIZE];
+static uint16_t sampleBuf[PD_FFT_CHANNELS][PD_FFT_SIZE];
 static int   writeIdx    = 0;
 static int   sampleCount = 0;   /* total samples pushed, capped at PD_FFT_SIZE */
 
@@ -103,7 +103,7 @@ bool pdFftAnalyzerInit(void)
  * Sample ingestion — called at 200 Hz from pdTask
  * ────────────────────────────────────────────────────────────────────────── */
 
-void pdFftAnalyzerPushSample(const float pd[PD_FFT_CHANNELS])
+void pdFftAnalyzerPushSample(const uint16_t pd[PD_FFT_CHANNELS])
 {
     if (!initialized) return;
 
@@ -144,8 +144,8 @@ void pdFftAnalyzerRun(void)
 
         /* ── Step 1: Linearise circular buffer (oldest→newest) ─────────── */
         int dst = 0;
-        for (int i = startIdx; i < PD_FFT_SIZE; i++) fftIn[dst++] = sampleBuf[ch][i];
-        for (int i = 0;        i < startIdx;    i++) fftIn[dst++] = sampleBuf[ch][i];
+        for (int i = startIdx; i < PD_FFT_SIZE; i++) fftIn[dst++] = (float)sampleBuf[ch][i] / 4095.0f;
+        for (int i = 0;        i < startIdx;    i++) fftIn[dst++] = (float)sampleBuf[ch][i] / 4095.0f;
 
         /* ── Step 2: Remove DC (subtract mean) — identical to Teensy ───── */
         float mean = 0.0f;

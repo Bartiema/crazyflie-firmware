@@ -42,7 +42,7 @@
  * Thread-safe (mutex-protected). Max blocking: 5 ms.
  * Returns false if deck not ready or mutex timeout.
  */
-bool pdDeckGetValues(float out[PD_CHANNEL_COUNT]);
+bool pdDeckGetValues(uint16_t out[PD_CHANNEL_COUNT]);
 
 /** Returns true once at least one conversion has completed. */
 bool pdDeckIsReady(void);

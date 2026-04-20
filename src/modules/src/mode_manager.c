@@ -229,7 +229,7 @@ static void modeTask(void *param)
     while (1) {
 
         /* ── 1. Read photodiodes ─────────────────────────────────────────── */
-        float pd[PD_CHANNEL_COUNT];
+        uint16_t pd[PD_CHANNEL_COUNT];
         bool pdOk = pdDeckGetValues(pd);
         if (pdOk) {
             lastPdOkTick = xTaskGetTickCount();

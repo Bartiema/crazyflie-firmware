@@ -54,7 +54,7 @@ bool pdFftAnalyzerInit(void);
  * Add one new ADC sample for all 8 channels to the circular buffers.
  * Call this at the PD sampling rate (200 Hz) from the sampling task.
  */
-void pdFftAnalyzerPushSample(const float pd[PD_FFT_CHANNELS]);
+void pdFftAnalyzerPushSample(const uint16_t pd[PD_FFT_CHANNELS]);
 
 /**
  * pdFftAnalyzerReady()
