@@ -6,9 +6,9 @@
  *
  * Porting notes:
  *   - arm_rfft_fast_f32 is used identically to the Teensy (CMSIS-DSP available on both)
- *   - Sample rate changed: 1600 Hz (Teensy) → 200 Hz (CrazyFlie)
+ *   - Sample rate changed: 1600 Hz (Teensy) → 500 Hz (CrazyFlie, pushed from pdTask)
  *   - FFT size changed:    1024 (Teensy)     → 256  (CrazyFlie)
- *   - Frequency resolution: 1.5625 Hz/bin   → 0.78125 Hz/bin (better!)
+ *   - Frequency resolution: 1.5625 Hz/bin   → 1.953 Hz/bin
  *   - SNR calculation: identical algorithm (exclude target + harmonics ± 10 bins)
  *   - Hamming window: identical formula
  */
@@ -34,8 +34,8 @@
  * Constants
  * ────────────────────────────────────────────────────────────────────────── */
 
-#define PD_SAMPLE_RATE_HZ   200.0f
-#define FREQ_RESOLUTION     (PD_SAMPLE_RATE_HZ / (float)PD_FFT_SIZE)  /* 0.78125 Hz */
+#define PD_SAMPLE_RATE_HZ   500.0f
+#define FREQ_RESOLUTION     (PD_SAMPLE_RATE_HZ / (float)PD_FFT_SIZE)  /* 1.953 Hz */
 #define NOISE_EXCL_BINS     10    /* ±bins excluded around target and harmonics */
 #define NUM_HARMONICS       4     /* exclude fundamental + 4 harmonics for SNR */
 
@@ -65,6 +65,7 @@ static SemaphoreHandle_t fftMutex;
 
 static bool initialized = false;
 static bool bufferReady = false;   /* true once first full window is available */
+static int  samplesSinceRun = 0;   /* samples pushed since last pdFftAnalyzerRun() */
 
 /* ──────────────────────────────────────────────────────────────────────────
  * Init
@@ -100,7 +101,7 @@ bool pdFftAnalyzerInit(void)
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
- * Sample ingestion — called at 200 Hz from pdTask
+ * Sample ingestion — called at 500 Hz from pdTask
  * ────────────────────────────────────────────────────────────────────────── */
 
 void pdFftAnalyzerPushSample(const uint16_t pd[PD_FFT_CHANNELS])
@@ -120,9 +121,16 @@ void pdFftAnalyzerPushSample(const uint16_t pd[PD_FFT_CHANNELS])
             bufferReady = true;
         }
     }
+
+    samplesSinceRun++;
 }
 
 bool pdFftAnalyzerReady(void) { return bufferReady; }
+
+bool pdFftAnalyzerWindowReady(void)
+{
+    return bufferReady && (samplesSinceRun >= PD_FFT_SIZE);
+}
 
 /* ──────────────────────────────────────────────────────────────────────────
  * FFT execution — call at a lower rate (e.g. every PD_FFT_SIZE samples = 1.28 s)
@@ -163,6 +171,7 @@ void pdFftAnalyzerRun(void)
     }
 
     xSemaphoreGive(fftMutex);
+    samplesSinceRun = 0;
 }
 
 /* ──────────────────────────────────────────────────────────────────────────

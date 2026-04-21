@@ -123,8 +123,6 @@ static int        numTrackedFreqs = 0;
 /* Per-frequency readings passed to waypoint navigator */
 static WpNavFreqReading freqReadings[MAX_TRACKED_FREQS];
 
-/* FFT scheduling */
-static int fftSamplesSince = 0;
 
 /* Logged fusion diagnostics */
 static float logBearingAngle = 0.0f;
@@ -228,13 +226,9 @@ static void modeTask(void *param)
 
     while (1) {
 
-        /* ── 1. Read photodiodes ─────────────────────────────────────────── */
-        uint16_t pd[PD_CHANNEL_COUNT];
-        bool pdOk = pdDeckGetValues(pd);
-        if (pdOk) {
+        /* ── 1. Check photodiode health ─────────────────────────────────── */
+        if (pdDeckIsReady()) {
             lastPdOkTick = xTaskGetTickCount();
-            pdFftAnalyzerPushSample(pd);
-            fftSamplesSince++;
         }
 
         /* ── 2. PD timeout safety ───────────────────────────────────────── */
@@ -248,10 +242,9 @@ static void modeTask(void *param)
 
         /* ── 3. Run FFT when a new window is ready ──────────────────────── */
         bool newSpectrum = false;
-        if (pdFftAnalyzerReady() && fftSamplesSince >= PD_FFT_SIZE) {
+        if (pdFftAnalyzerWindowReady()) {
             pdFftAnalyzerRun();
-            fftSamplesSince = 0;
-            newSpectrum     = true;
+            newSpectrum = true;
         }
 
         /* ── 4. Process new spectrum ────────────────────────────────────── */

@@ -28,7 +28,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/** FFT window size. Must be a power of 2. 256 @ 200 Hz → 0.78 Hz/bin. */
+/** FFT window size. Must be a power of 2. 256 @ 500 Hz → 1.95 Hz/bin. */
 #define PD_FFT_SIZE       256
 
 /** Number of photodiode channels. */
@@ -52,7 +52,7 @@ bool pdFftAnalyzerInit(void);
 /**
  * pdFftAnalyzerPushSample()
  * Add one new ADC sample for all 8 channels to the circular buffers.
- * Call this at the PD sampling rate (200 Hz) from the sampling task.
+ * Call this from pdTask at 500 Hz — NOT from the slower modeTask.
  */
 void pdFftAnalyzerPushSample(const uint16_t pd[PD_FFT_CHANNELS]);
 
@@ -62,6 +62,13 @@ void pdFftAnalyzerPushSample(const uint16_t pd[PD_FFT_CHANNELS]);
  * (i.e., the first full window is available).
  */
 bool pdFftAnalyzerReady(void);
+
+/**
+ * pdFftAnalyzerWindowReady()
+ * Returns true when PD_FFT_SIZE new samples have been pushed since the last
+ * call to pdFftAnalyzerRun(). Use this in modeTask to trigger FFT execution.
+ */
+bool pdFftAnalyzerWindowReady(void);
 
 /**
  * pdFftAnalyzerRun()

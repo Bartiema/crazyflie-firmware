@@ -54,6 +54,7 @@
 #include "sleepus.h"
 
 #include "photodiode_deck.h"
+#include "pd_fft_analyzer.h"
 
 /* ── Configuration ───────────────────────────────────────────────────────── */
 
@@ -147,6 +148,7 @@ static void pdTask(void *param)
         memcpy(pdValues, buf, sizeof(pdValues));
         xSemaphoreGive(pdMutex);
 
+        pdFftAnalyzerPushSample(buf);
         xSemaphoreGive(pdDataReady);
         vTaskDelayUntil(&lastWake, M2T(1000 / PD_SAMPLE_RATE_HZ));
     }
