@@ -55,6 +55,7 @@
 
 #include "photodiode_deck.h"
 #include "pd_fft_analyzer.h"
+#include "mode_manager.h"
 
 /* ── Configuration ───────────────────────────────────────────────────────── */
 
@@ -169,6 +170,7 @@ static void pdDeckInit(DeckInfo *info)
     digitalWrite(PD_CS_PIN, HIGH);
 
     xTaskCreate(pdTask, "pdTask", PD_TASK_STACKSIZE, NULL, PD_TASK_PRIORITY, NULL);
+    modeManagerInit();
 
     DEBUG_PRINT("PD deck: init (shared SPI API, Mode 3 bus default)\n");
 }

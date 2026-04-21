@@ -351,6 +351,7 @@ int        waypointNavigatorGetWaypointCount(void) { return waypointCount; }
 bool       waypointNavigatorIsMissionComplete(void){ return navState == WP_NAV_COMPLETE; }
 int        waypointNavigatorGetNumUniqueFreqs(void){ return numUniqueFreqs; }
 float      waypointNavigatorGetUniqueFreq(int i)   { return (i < numUniqueFreqs) ? uniqueFreqs[i] : 0.0f; }
+void       waypointNavigatorBuildFreqTable(void)   { extractUniqueFrequencies(); }
 
 /* ──────────────────────────────────────────────────────────────────────────
  * PARAM

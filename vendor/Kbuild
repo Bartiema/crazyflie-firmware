@@ -241,6 +241,7 @@ obj-y += CMSIS/CMSIS/DSP/Source/SupportFunctions/arm_q7_to_q31.o
 obj-y += CMSIS/CMSIS/DSP/Source/TransformFunctions/arm_bitreversal2.o
 obj-y += CMSIS/CMSIS/DSP/Source/TransformFunctions/arm_bitreversal.o
 obj-y += CMSIS/CMSIS/DSP/Source/TransformFunctions/arm_cfft_f32.o
+obj-y += CMSIS/CMSIS/DSP/Source/TransformFunctions/arm_cfft_init_f32.o
 obj-y += CMSIS/CMSIS/DSP/Source/TransformFunctions/arm_cfft_q15.o
 obj-y += CMSIS/CMSIS/DSP/Source/TransformFunctions/arm_cfft_q31.o
 obj-y += CMSIS/CMSIS/DSP/Source/TransformFunctions/arm_cfft_radix2_f32.o

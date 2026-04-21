@@ -213,8 +213,8 @@ static void injectSetpoint(float vx, float yaw_rate_deg)
 /* ──────────────────────────────────────────────────────────────────────────
  * Main 100 Hz task
  * ────────────────────────────────────────────────────────────────────────── */
-#define MODE_TASK_STACKSIZE  (4 * configMINIMAL_STACK_SIZE)
-#define MODE_TASK_PRIORITY   4
+#define MODE_TASK_STACKSIZE  (6 * configMINIMAL_STACK_SIZE)
+#define MODE_TASK_PRIORITY   1
 
 STATIC_MEM_TASK_ALLOC(modeTask, MODE_TASK_STACKSIZE);
 
@@ -425,6 +425,7 @@ void modeManagerInit(void)
         waypointNavigatorAddWaypoint(DEFAULT_MISSION[i].freq,
                                       DEFAULT_MISSION[i].dwell_ms);
     }
+    waypointNavigatorBuildFreqTable();
 
     /* Populate frequency tracking slots from navigator */
     numTrackedFreqs = waypointNavigatorGetNumUniqueFreqs();

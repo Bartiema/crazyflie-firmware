@@ -87,3 +87,8 @@ bool       waypointNavigatorIsMissionComplete(void);
 /** Get the list of unique frequencies needed (to configure FFT analysis). */
 int    waypointNavigatorGetNumUniqueFreqs(void);
 float  waypointNavigatorGetUniqueFreq(int index);
+
+/** Build the unique-frequency table from added waypoints without starting
+ *  the mission. Call this after AddWaypoint() so GetNumUniqueFreqs() is
+ *  valid before the first StartMission(). */
+void   waypointNavigatorBuildFreqTable(void);

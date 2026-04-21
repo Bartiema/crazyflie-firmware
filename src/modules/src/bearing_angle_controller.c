@@ -5,18 +5,17 @@
  *
  * Sensor geometry confirmed from PCB file (photodiode-expansion.kicad_pcb):
  *   Board centre at PCB coords (139.001, 97.001).
- *   P1/P2 CF expansion connectors define forward (-Y on PCB = drone +X).
  *
- *   ch | J(PCB) | drone angle  | dist
- *   ---+--------+--------------+--------
- *    0 | J1     |  232.7°      | 18.785 mm
- *    1 | J2     |  277.8°      | 18.489 mm
- *    2 | J3     |  142.7°      | 18.641 mm
- *    3 | J4     |  187.7°      | 18.670 mm
- *    4 | J5     |   53.6°      | 18.553 mm
- *    5 | J6     |   97.8°      | 18.489 mm
- *    6 | J7     |    7.7°      | 18.670 mm  ← nearest to forward (ch0 in user convention)
- *    7 | J8     |  322.7°      | 18.641 mm
+ *   ch | J(PCB) | drone angle | dist
+ *   ---+--------+-------------+---------
+ *    0 | J1     |  45°       | 18.785 mm
+ *    1 | J2     |  0°        | 18.489 mm
+ *    2 | J3     |  135°      | 18.641 mm
+ *    3 | J4     |  90°       | 18.670 mm
+ *    4 | J5     |  225°      | 18.553 mm
+ *    5 | J6     |  180°      | 18.489 mm
+ *    6 | J7     |  270°      | 18.670 mm 
+ *    7 | J8     |  315°      | 18.641 mm
  *
  * Channel wiring (confirmed from both schematics, exact 5.08 mm ΔY per step):
  *   J1(sch) → PD_IN_0 → AMP_OUT_0 → ADC_CH0 → pdValues[0]
@@ -44,14 +43,14 @@
  * Body frame: 0° = forward (+X), 90° = left (+Y), CCW positive
  * ────────────────────────────────────────────────────────────────────────── */
 static const float SENSOR_ANGLES_DEG[BA_SENSOR_COUNT] = {
-    232.7f,  /* ch0 – J1 */
-    277.8f,  /* ch1 – J2 */
-    142.7f,  /* ch2 – J3 */
-    187.7f,  /* ch3 – J4 */
-     53.6f,  /* ch4 – J5 */
-     97.8f,  /* ch5 – J6 */
-      7.7f,  /* ch6 – J7  (nearest to forward) */
-    322.7f,  /* ch7 – J8 */
+    45.0f,
+    0.0f,
+    135.0f,
+    90.0f,
+    225.0f,
+    180.0f,
+    270.0f,
+    315.0f
 };
 
 static float sensorCos[BA_SENSOR_COUNT];
