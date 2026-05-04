@@ -354,9 +354,10 @@ bool wlsGradientControllerUpdateMap(float cx, float cy,
 
     if (xSemaphoreTake(mapMutex, M2T(10)) != pdTRUE) return false;
 
-    /* Collect neighbours with inverse-distance² weights */
-    float pts_x[MAP_MAX_POINTS], pts_y[MAP_MAX_POINTS], pts_z[MAP_MAX_POINTS];
-    float weights[MAP_MAX_POINTS];
+    /* Collect neighbours with inverse-distance² weights.
+     * Static to avoid overflowing modeTask's 3600-byte stack (4×256×4 = 4096 bytes). */
+    static float pts_x[MAP_MAX_POINTS], pts_y[MAP_MAX_POINTS], pts_z[MAP_MAX_POINTS];
+    static float weights[MAP_MAX_POINTS];
     int   n          = 0;
     float weight_sum = 0.0f;
 

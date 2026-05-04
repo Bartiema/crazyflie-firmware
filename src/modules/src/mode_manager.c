@@ -213,7 +213,7 @@ static void injectSetpoint(float vx, float yaw_rate_deg)
 /* ──────────────────────────────────────────────────────────────────────────
  * Main 100 Hz task
  * ────────────────────────────────────────────────────────────────────────── */
-#define MODE_TASK_STACKSIZE  (6 * configMINIMAL_STACK_SIZE)
+#define MODE_TASK_STACKSIZE  (10 * configMINIMAL_STACK_SIZE)
 #define MODE_TASK_PRIORITY   1
 
 STATIC_MEM_TASK_ALLOC(modeTask, MODE_TASK_STACKSIZE);
