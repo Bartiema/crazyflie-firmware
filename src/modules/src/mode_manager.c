@@ -76,7 +76,7 @@ static float fusionWBearing        = 0.5f;   /* W_BEARING  */
 static float fusionWGradient       = 0.5f;   /* W_GRADIENT */
 static float bearingSmoothFactor   = 0.3f;   /* BEARING_SMOOTH_FACTOR */
 static float gradientThreshold     = 0.5f;   /* GRADIENT_THRESHOLD (magnitude gate) */
-static float minTotalLight         = 1.0f;   /* MIN_TOTAL_LIGHT — aggregate gate */
+static float minTotalLight         = 0.05f;  /* MIN_TOTAL_LIGHT — aggregate gate; FFT inputs are ADC/4095 so magnitudes are small */
 static uint8_t fusionMinMapPoints  = 3;      /* MIN_MAP_POINTS */
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -84,9 +84,7 @@ static uint8_t fusionMinMapPoints  = 3;      /* MIN_MAP_POINTS */
  * ────────────────────────────────────────────────────────────────────────── */
 static float navAltTarget   = 1.0f;   /* hold altitude via Flow Deck */
 static float navMaxVel      = 0.30f;  /* forward velocity clamp (m/s) */
-static float navMaxYaw      = 60.0f;  /* yaw rate clamp (deg/s) */
 static float navFwdSpeed    = 0.20f;  /* forward speed when approaching */
-static float navYawGain     = 2.0f;   /* heading error (deg) → yaw rate (deg/s) */
 static uint32_t pdTimeoutMs = 500U;   /* revert MANUAL if no PD data */
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -132,6 +130,7 @@ static float logCmdYaw       = 0.0f;
 static float logWB           = 1.0f;
 static float logWG           = 0.0f;
 static int32_t logMapSize    = 0;
+static float logMaxSnr       = 0.0f;
 
 /* ──────────────────────────────────────────────────────────────────────────
  * Helpers
@@ -192,21 +191,20 @@ static void modeParamCallback(void) { applyModeChange(currentMode); }
 /* ──────────────────────────────────────────────────────────────────────────
  * Setpoint injection
  * ────────────────────────────────────────────────────────────────────────── */
-static void injectSetpoint(float vx, float yaw_rate_deg)
+static void injectSetpoint(float vx, float yaw_deg)
 {
-    vx           = constrain(vx,           -navMaxVel, navMaxVel);
-    yaw_rate_deg = constrain(yaw_rate_deg, -navMaxYaw, navMaxYaw);
+    vx = constrain(vx, -navMaxVel, navMaxVel);
 
     setpoint_t sp;
     memset(&sp, 0, sizeof(sp));
-    sp.mode.x            = modeVelocity;
-    sp.mode.y            = modeVelocity;
-    sp.mode.z            = modeAbs;
-    sp.mode.yaw          = modeVelocity;
-    sp.velocity.x        = vx;
-    sp.velocity.y        = 0.0f;
-    sp.position.z        = navAltTarget;
-    sp.attitudeRate.yaw  = yaw_rate_deg;
+    sp.mode.x        = modeVelocity;
+    sp.mode.y        = modeVelocity;
+    sp.mode.z        = modeAbs;
+    sp.mode.yaw      = modeAbs;
+    sp.velocity.x    = vx;
+    sp.velocity.y    = 0.0f;
+    sp.position.z    = navAltTarget;
+    sp.attitude.yaw  = yaw_deg;
     commanderSetSetpoint(&sp, COMMANDER_PRIORITY_EXTRX);
 }
 
@@ -370,20 +368,16 @@ static void modeTask(void *param)
                 logWB           = wB;
                 logWG           = wG;
                 logMapSize      = mapSz;
+                logMaxSnr       = maxSnr;
 
                 /* ── Mode execution ──────────────────────────────────────── */
                 if (currentMode == MODE_NAVIGATE) {
-                    /* Derive yaw-rate error from cmd_yaw vs current_yaw.
-                     * A proportional controller converts the heading error to
-                     * a yaw rate command (deg/s). Gain tunable via PARAM.   */
-                    float yawErr     = normalizeAngle(cmdYaw - currentYaw);
-                    float yawRateCmd = yawErr * navYawGain;
-
-                    /* Waypoint navigator provides forward velocity */
                     WpNavSetpoint navSp = waypointNavigatorUpdate(
                         freqReadings, numTrackedFreqs);
 
-                    float fwdVel = 0.0f;
+                    float fwdVel  = 0.0f;
+                    float yawCmd  = cmdYaw;
+
                     if (fs->bearingValid &&
                         (navSp.state == WP_NAV_APPROACHING ||
                          navSp.state == WP_NAV_ALIGNING ||
@@ -392,11 +386,11 @@ static void modeTask(void *param)
                     }
                     if (navSp.state == WP_NAV_HOLDING ||
                         navSp.state == WP_NAV_COMPLETE) {
-                        fwdVel = 0.0f;
-                        yawRateCmd = 0.0f;
+                        fwdVel  = 0.0f;
+                        yawCmd  = currentYaw;   /* hold heading while dwelling */
                     }
 
-                    injectSetpoint(fwdVel, yawRateCmd);
+                    injectSetpoint(fwdVel, yawCmd);
                 }
                 /* MODE_DATA_GATHER: all LOG variables updated, no setpoint */
             }
@@ -448,9 +442,7 @@ PARAM_GROUP_START(nav)
     PARAM_ADD_WITH_CALLBACK(PARAM_UINT8, mode,        &currentMode,        modeParamCallback)
     PARAM_ADD(PARAM_FLOAT,               altTarget,   &navAltTarget)
     PARAM_ADD(PARAM_FLOAT,               maxVel,      &navMaxVel)
-    PARAM_ADD(PARAM_FLOAT,               maxYaw,      &navMaxYaw)
     PARAM_ADD(PARAM_FLOAT,               fwdSpeed,    &navFwdSpeed)
-    PARAM_ADD(PARAM_FLOAT,               yawGain,     &navYawGain)
     PARAM_ADD(PARAM_UINT32,              pdTimeout,   &pdTimeoutMs)
     /* Fusion tuning */
     PARAM_ADD(PARAM_FLOAT,               wBearing,    &fusionWBearing)
@@ -470,5 +462,6 @@ LOG_GROUP_START(nav)
     LOG_ADD(LOG_FLOAT,  cmdYaw,  &logCmdYaw)
     LOG_ADD(LOG_FLOAT,  wB,      &logWB)
     LOG_ADD(LOG_FLOAT,  wG,      &logWG)
+    LOG_ADD(LOG_FLOAT,  snr,     &logMaxSnr)
     LOG_ADD(LOG_INT32,  mapSize, &logMapSize)
 LOG_GROUP_STOP(nav)
