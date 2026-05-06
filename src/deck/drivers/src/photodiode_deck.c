@@ -59,10 +59,21 @@
 
 /* ── Configuration ───────────────────────────────────────────────────────── */
 
-#define ADS7953_SPI_BAUDRATE    SPI_BAUDRATE_2MHZ
+#define ADS7953_SPI_BAUDRATE    SPI_BAUDRATE_6MHZ   /* ADS7953 max SCLK = 40 MHz.
+                                                     * SPI_BAUDRATE_2MHZ is actually
+                                                     * 1.3 MHz (84/64); SPI_BAUDRATE_21MHZ
+                                                     * causes signal-integrity failures
+                                                     * on the deck connector at that edge
+                                                     * rate. SPI_BAUDRATE_6MHZ = 5.25 MHz
+                                                     * (84/16) is a reliable compromise:
+                                                     * burst drops from ~155 µs to ~46 µs
+                                                     * → 2.3 % duty cycle at 500 Hz. */
 #define PD_CS_PIN               DECK_GPIO_IO4
 #define PD_SAMPLE_RATE_HZ       500
-#define ADS7953_INTERFRAME_US   5
+#define ADS7953_INTERFRAME_US   2   /* ADS7953 max throughput = 1 MSPS → 1 µs
+                                     * conversion time; 2 µs gives ample margin.
+                                     * Old value of 5 µs was overly conservative
+                                     * and dominated the burst window at low SCLK. */
 
 /* Corrected Auto-2 program command: enable bit set, last channel = 7. */
 #define CMD_PROGRAM_AUTO2       0x99C0U
@@ -101,20 +112,51 @@ static uint16_t adsTransfer(uint16_t cmd)
 }
 
 /* ── Read one full sweep of 8 channels in Auto-2 mode ───────────────────── */
-
+/*
+ * The SPI bus is shared with the flow deck (PMW3901 + VL53L1). Acquiring
+ * the bus mutex 9 times per sample (4500 acq/s at 500 Hz) causes frequent
+ * blocking of the flow deck's SPI reads, starving the Kalman estimator of
+ * optical-flow data and producing erratic drift / nosedives even in MANUAL
+ * or DATA_GATHER mode.
+ *
+ * Fix: hold the bus for the entire 9-frame burst (1 mutex acquisition per
+ * sample instead of 9). The ADS7953 still receives individual CS pulses
+ * between frames as required; the flow deck simply cannot interleave during
+ * the burst window.
+ *
+ * Burst duration at 21 MHz SCLK, 2 µs interframe:
+ *   (16 bits / 21 MHz + 2 µs) × 9 frames ≈ 25 µs   → 1.2 % duty at 500 Hz
+ * Previous (1.3 MHz SCLK, 5 µs interframe):
+ *   (12.2 µs + 5 µs) × 9 ≈ 155 µs                  → 7.7 % duty at 500 Hz
+ */
 static void adsReadAllChannels(uint16_t out[PD_CHANNEL_COUNT])
 {
-    /* First frame of each burst is stale — discard. */
-    adsTransfer(CMD_CONTINUE);
+    uint8_t tx[2] = { 0, 0 };
+    uint8_t rx[2];
+
+    spiBeginTransaction(ADS7953_SPI_BAUDRATE);   /* acquire bus ONCE */
+
+    /* First frame of each burst is stale — discard */
+    digitalWrite(PD_CS_PIN, LOW);
+    spiExchange(2, tx, rx);
+    digitalWrite(PD_CS_PIN, HIGH);
+    sleepus(ADS7953_INTERFRAME_US);
 
     for (int i = 0; i < PD_CHANNEL_COUNT; i++) {
-        uint16_t word = adsTransfer(CMD_CONTINUE);
+        digitalWrite(PD_CS_PIN, LOW);
+        spiExchange(2, tx, rx);
+        digitalWrite(PD_CS_PIN, HIGH);
+        sleepus(ADS7953_INTERFRAME_US);
+
+        uint16_t word = ((uint16_t)rx[0] << 8) | rx[1];
         uint8_t  id   = (word >> 12) & 0x0F;
         uint16_t raw  = word & 0x0FFF;
         if (id < PD_CHANNEL_COUNT) {
             out[id] = raw;
         }
     }
+
+    spiEndTransaction();                          /* release bus ONCE */
 }
 
 /* ── Sampling task ───────────────────────────────────────────────────────── */
@@ -134,7 +176,7 @@ static void pdTask(void *param)
     adsTransfer(CMD_CONTINUE);
 
     pdReady = true;
-    DEBUG_PRINT("PD deck: ready @ %d Hz (Auto-2, shared SPI, last-ch=7)\n",
+    DEBUG_PRINT("PD deck: ready @ %d Hz (Auto-2, 5.25 MHz SPI, 2 µs interframe, last-ch=7)\n",
                 PD_SAMPLE_RATE_HZ);
 
     /* Persistent scratch — bad frames hold the previous value. */

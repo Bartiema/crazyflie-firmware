@@ -132,6 +132,13 @@ static float logWG           = 0.0f;
 static int32_t logMapSize    = 0;
 static float logMaxSnr       = 0.0f;
 
+/* Live setpoint — updated each FFT frame, injected every 100 Hz tick.
+ * spHolding=true means "command currentYaw" rather than a fixed world angle,
+ * used during HOLDING/COMPLETE and before the first FFT frame arrives. */
+static float spFwdVel  = 0.0f;
+static float spYawDeg  = 0.0f;
+static bool  spHolding = true;   /* safe default: hold wherever drone is pointing */
+
 /* ──────────────────────────────────────────────────────────────────────────
  * Helpers
  * ────────────────────────────────────────────────────────────────────────── */
@@ -181,6 +188,10 @@ static void applyModeChange(DroneMode req)
         wlsGradientControllerClearMap();
         waypointNavigatorResetMission();
         waypointNavigatorStartMission();
+        /* Reset live setpoint: hold heading until the first FFT frame arrives */
+        spFwdVel  = 0.0f;
+        spYawDeg  = 0.0f;
+        spHolding = true;
     }
     currentMode = req;
     DEBUG_PRINT("MODEMGR: mode → %d\n", (int)currentMode);
@@ -238,35 +249,31 @@ static void modeTask(void *param)
             }
         }
 
-        /* ── 3. Run FFT when a new window is ready ──────────────────────── */
+        /* ── 3. Read yaw every tick — needed for 100 Hz setpoint injection ─ */
+        float currentYaw = 0.0f;
+        {
+            float roll = 0.0f, pitch = 0.0f;
+            sensfusion6GetEulerRPY(&roll, &pitch, &currentYaw);
+        }
+
+        /* ── 4. Run FFT when a new window is ready ──────────────────────── */
         bool newSpectrum = false;
         if (pdFftAnalyzerWindowReady()) {
             pdFftAnalyzerRun();
             newSpectrum = true;
         }
 
-        /* ── 4. Process new spectrum ────────────────────────────────────── */
+        /* ── 5. Process new spectrum ────────────────────────────────────── */
         if (newSpectrum && numTrackedFreqs > 0) {
 
-            /* Read current drone state (read-only, safe to call from any task).
-             * estimatorKalmanGetEstimatedPos() is the correct getter for position
-             * when the Kalman estimator is active (required with Flow Deck v2).
-             * Attitude (yaw) is always available via the attitude log variables
-             * but we access it through the state struct directly here. */
-            float currentYaw = 0.0f;
-            float posX       = 0.0f;
-            float posY       = 0.0f;
-
+            /* Position only needed for map updates — read here, not every tick */
+            float posX = 0.0f;
+            float posY = 0.0f;
             {
                 point_t pos;
                 estimatorKalmanGetEstimatedPos(&pos);
                 posX = pos.x;
                 posY = pos.y;
-
-                /* Yaw is available from the sensfusion / attitude estimator */
-                float roll = 0.0f, pitch = 0.0f, yaw = 0.0f;
-                sensfusion6GetEulerRPY(&roll, &pitch, &yaw);
-                currentYaw = yaw;
             }
 
             for (int f = 0; f < numTrackedFreqs; f++) {
@@ -370,33 +377,41 @@ static void modeTask(void *param)
                 logMapSize      = mapSz;
                 logMaxSnr       = maxSnr;
 
-                /* ── Mode execution ──────────────────────────────────────── */
+                /* ── Update live setpoint targets (injected below at 100 Hz) ─ */
                 if (currentMode == MODE_NAVIGATE) {
                     WpNavSetpoint navSp = waypointNavigatorUpdate(
                         freqReadings, numTrackedFreqs);
 
-                    float fwdVel  = 0.0f;
-                    float yawCmd  = cmdYaw;
+                    spFwdVel  = 0.0f;
+                    spHolding = false;
 
                     if (fs->bearingValid &&
                         (navSp.state == WP_NAV_APPROACHING ||
                          navSp.state == WP_NAV_ALIGNING ||
                          navSp.state == WP_NAV_SEARCHING)) {
-                        fwdVel = navFwdSpeed;
+                        spFwdVel = navFwdSpeed;
                     }
                     if (navSp.state == WP_NAV_HOLDING ||
                         navSp.state == WP_NAV_COMPLETE) {
-                        fwdVel  = 0.0f;
-                        yawCmd  = currentYaw;   /* hold heading while dwelling */
+                        spFwdVel  = 0.0f;
+                        spHolding = true;   /* lock yaw to live currentYaw */
                     }
-
-                    injectSetpoint(fwdVel, yawCmd);
+                    spYawDeg = cmdYaw;
                 }
-                /* MODE_DATA_GATHER: all LOG variables updated, no setpoint */
+                /* MODE_DATA_GATHER: LOG variables updated, no setpoint targets */
             }
         }
 
-        /* ── MODE_MANUAL: nothing to do ───────────────────────────────── */
+        /* ── 6. Inject setpoint at 100 Hz in NAVIGATE mode ──────────────── */
+        /* Keeps the commander's stale-setpoint watchdog satisfied every tick
+         * rather than only on FFT frames (~2 Hz). spHolding=true commands the
+         * live currentYaw so the drone holds its actual heading with no jump. */
+        if (currentMode == MODE_NAVIGATE) {
+            float yaw = spHolding ? currentYaw : spYawDeg;
+            injectSetpoint(spFwdVel, yaw);
+        }
+
+        /* ── MODE_MANUAL / MODE_DATA_GATHER: external commander controls drone */
 
         vTaskDelayUntil(&lastWake, M2T(10));   /* 100 Hz */
     }
