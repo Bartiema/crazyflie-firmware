@@ -214,6 +214,7 @@ static void injectSetpoint(float vx, float yaw_deg)
     sp.mode.yaw      = modeAbs;
     sp.velocity.x    = vx;
     sp.velocity.y    = 0.0f;
+    sp.velocity_body = true;
     sp.position.z    = navAltTarget;
     sp.attitude.yaw  = yaw_deg;
     commanderSetSetpoint(&sp, COMMANDER_PRIORITY_EXTRX);
@@ -311,7 +312,7 @@ static void modeTask(void *param)
                 }
 
                 /* Absolute world-frame bearing heading */
-                float absBearingYaw = normalizeAngle(currentYaw + fs->smoothBearing);
+                float absBearingYaw = normalizeAngle(fs->smoothBearing - currentYaw);
 
                 /* ── WLS: instantaneous gradient (always computed for log) ─ */
                 WlsGradientInput wIn;

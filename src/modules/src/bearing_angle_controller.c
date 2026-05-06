@@ -43,14 +43,14 @@
  * Body frame: 0° = forward (+X), 90° = left (+Y), CCW positive
  * ────────────────────────────────────────────────────────────────────────── */
 static const float SENSOR_ANGLES_DEG[BA_SENSOR_COUNT] = {
-    45.0f,
+    315.0f,
     0.0f,
-    135.0f,
-    90.0f,
     225.0f,
-    180.0f,
     270.0f,
-    315.0f
+    135.0f,
+    180.0f,
+    90.0f,
+    45.0f
 };
 
 static float sensorCos[BA_SENSOR_COUNT];

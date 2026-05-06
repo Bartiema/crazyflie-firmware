@@ -53,20 +53,24 @@ class GradientDrone:
     _WP_SIZE = struct.calcsize(_WP_FMT)
 
     _LOG_VARS = [
-        ('pd.ch0','float'),('pd.ch1','float'),('pd.ch2','float'),('pd.ch3','float'),
-        ('pd.ch4','float'),('pd.ch5','float'),('pd.ch6','float'),('pd.ch7','float'),
-        ('bearingCtrl.bearing','float'),('bearingCtrl.weight','float'),
+        # ('pd.ch0','float'),('pd.ch1','float'),('pd.ch2','float'),('pd.ch3','float'),
+        # ('pd.ch4','float'),('pd.ch5','float'),('pd.ch6','float'),('pd.ch7','float'),
+        ('bearingCtrl.bearing','float'),
+        # ('bearingCtrl.weight','float'),
         ('bearingCtrl.valid','uint8_t'),
-        ('wlsCtrl.iGradX','float'),('wlsCtrl.iGradY','float'),
-        ('wlsCtrl.iGradMag','float'),('wlsCtrl.iGradAng','float'),
-        ('wlsCtrl.mGradX','float'),('wlsCtrl.mGradY','float'),
-        ('wlsCtrl.mGradMag','float'),('wlsCtrl.mGradAng','float'),
-        ('wlsCtrl.mR2','float'),('wlsCtrl.mapSize','int32_t'),
-        ('nav.bearing','float'),('nav.gradAng','float'),('nav.gradMag','float'),
-        ('nav.cmdYaw','float'),('nav.wB','float'),('nav.wG','float'),
-        ('nav.mapSize','int32_t'),('nav.mode','uint8_t'),
-        ('wpNav.state','uint8_t'),('wpNav.wpIdx','uint8_t'),
-        ('wpNav.vx','float'),('wpNav.yawRate','float'),
+        ('stateEstimate.x','float'),('stateEstimate.y','float'),
+        # ,('stateEstimate.z','float'),
+        ('stateEstimate.yaw','float'),
+        # ('wlsCtrl.iGradX','float'),('wlsCtrl.iGradY','float'),
+        # ('wlsCtrl.iGradMag','float'),('wlsCtrl.iGradAng','float'),
+        # ('wlsCtrl.mGradX','float'),('wlsCtrl.mGradY','float'),
+        # ('wlsCtrl.mGradMag','float'),('wlsCtrl.mGradAng','float'),
+        # ('wlsCtrl.mR2','float'),('wlsCtrl.mapSize','int32_t'),
+        # ('nav.bearing','float'),('nav.gradAng','float'),('nav.gradMag','float'),
+        # ('nav.cmdYaw','float'),('nav.wB','float'),('nav.wG','float'),
+        # ('nav.mapSize','int32_t'),('nav.mode','uint8_t'),
+        # ('wpNav.state','uint8_t'),('wpNav.wpIdx','uint8_t'),
+        # ('wpNav.vx','float'),('wpNav.yawRate','float'),
     ]
 
     def __init__(self, uri: str, cache_dir: str = './cache'):
@@ -224,9 +228,12 @@ class GradientDrone:
         self.cf.high_level_commander.land(0.0, duration)
         time.sleep(duration + 0.5)
 
-    def wait_for_mission_complete(self, timeout: float = 180.0, poll_s: float = 0.5) -> bool:
+    def wait_for_mission_complete(self, timeout: float = 180.0, poll_s: float = 0.5,
+                                   stop_event=None) -> bool:
         deadline = time.time() + timeout
         while time.time() < deadline:
+            if stop_event is not None and stop_event.is_set():
+                log.info("Aborted by stop_event"); return False
             try:
                 if int(self.cf.param.get_value('wpNav.state')) == 6:
                     log.info("Mission complete"); return True
