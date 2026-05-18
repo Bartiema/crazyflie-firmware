@@ -215,6 +215,23 @@ bool pdFftAnalyzerRun(void)
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
+ * Accumulator reset — call on waypoint / frequency transitions
+ * ────────────────────────────────────────────────────────────────────────── */
+
+void pdFftAnalyzerResetAccumulator(void)
+{
+    if (!initialized) return;
+    if (xSemaphoreTake(fftMutex, M2T(10)) != pdTRUE) {
+        DEBUG_PRINT("pdFftAnalyzer: mutex timeout in ResetAccumulator\n");
+        return;
+    }
+    memset(spectrumAccum, 0, sizeof(spectrumAccum));
+    accumCount      = 0;
+    samplesSinceRun = 0;
+    xSemaphoreGive(fftMutex);
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
  * Frequency extraction — mirrors Teensy analyze_frequency_signal()
  * ────────────────────────────────────────────────────────────────────────── */
 

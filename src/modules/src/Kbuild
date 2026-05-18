@@ -61,5 +61,4 @@ obj-y += outlierfilter/
 obj-$(CONFIG_DECK_PHOTODIODE) += pd_fft_analyzer.o
 obj-$(CONFIG_DECK_PHOTODIODE) += bearing_angle_controller.o
 obj-$(CONFIG_DECK_PHOTODIODE) += wls_gradient_controller.o
-obj-$(CONFIG_DECK_PHOTODIODE) += waypoint_navigator.o
 obj-$(CONFIG_DECK_PHOTODIODE) += mode_manager.o

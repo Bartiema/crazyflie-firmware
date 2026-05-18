@@ -91,6 +91,15 @@ bool pdFftAnalyzerWindowReady(void);
 bool pdFftAnalyzerRun(void);
 
 /**
+ * pdFftAnalyzerResetAccumulator()
+ * Discard the Welch averaging accumulator and restart from scratch.
+ * Call on waypoint transitions so the new frequency's spectrum is not
+ * contaminated by frames accumulated for the previous frequency.
+ * Thread-safe: takes the internal mutex.
+ */
+void pdFftAnalyzerResetAccumulator(void);
+
+/**
  * pdFftAnalyzerGetFrequency()
  * Extract the magnitude and SNR at @target_freq_hz for channel @ch.
  * Must be called after pdFftAnalyzerRun().
