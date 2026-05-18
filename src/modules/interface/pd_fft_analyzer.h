@@ -34,6 +34,13 @@
 /** Number of photodiode channels. */
 #define PD_FFT_CHANNELS   8
 
+/** Samples between successive FFT runs (50% overlap). */
+#define PD_FFT_HOP_SIZE   (PD_FFT_SIZE / 2)
+
+/** Number of overlapping FFT frames averaged before publishing the spectrum.
+ *  SNR improves by √PD_FFT_AVERAGES. Set to 1 to disable averaging. */
+#define PD_FFT_AVERAGES   2
+
 /**
  * Result of a single-frequency analysis for one channel.
  */
@@ -76,8 +83,12 @@ bool pdFftAnalyzerWindowReady(void);
  * This is the expensive call (~1–2 ms on STM32F405); call it only when
  * pdFftAnalyzerReady() returns true and a new window is due.
  * Thread-safe: takes an internal mutex.
+ *
+ * Returns true when a freshly averaged spectrum has been published (i.e. every
+ * PD_FFT_AVERAGES hops). Returns false on intermediate hops where the spectrum
+ * is still accumulating. Callers should only process the spectrum on true.
  */
-void pdFftAnalyzerRun(void);
+bool pdFftAnalyzerRun(void);
 
 /**
  * pdFftAnalyzerGetFrequency()

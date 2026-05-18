@@ -92,3 +92,7 @@ float  waypointNavigatorGetUniqueFreq(int index);
  *  the mission. Call this after AddWaypoint() so GetNumUniqueFreqs() is
  *  valid before the first StartMission(). */
 void   waypointNavigatorBuildFreqTable(void);
+
+/** Return the frequency of the waypoint currently being targeted.
+ *  Returns 0 if no waypoints are loaded. */
+float  waypointNavigatorGetCurrentFreq(void);

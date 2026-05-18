@@ -69,7 +69,7 @@ static float navAlignTol        = 15.0f;   /* Teensy default */
 static float navAcqSnrThresh    =  5.0f;   /* Teensy default */
 
 /** SNR threshold used to declare "arrived at waypoint" */
-static float navApproachSnrThresh = 10.0f; /* Teensy default */
+static float navApproachSnrThresh = 7.0f; /* Teensy default */
 
 /** Forward velocity when approaching (m/s) */
 static float navFwdVel          = 0.20f;
@@ -206,13 +206,6 @@ static WpNavSetpoint handleApproaching(float bearing, float snr, bool valid)
 
     float err = angularDistance(0.0f, bearing);
 
-    /* Realign if misaligned beyond 2× tolerance */
-    if (fabsf(err) > navAlignTol * 2.0f) {
-        DEBUG_PRINT("WPNAV: misaligned (err=%.1f°), realigning\n", (double)err);
-        navState = WP_NAV_ALIGNING;
-        return makeSetpoint(0.0f, (err > 0.0f ? navYawRate : -navYawRate), WP_NAV_ALIGNING);
-    }
-
     /* "Arrived" when SNR exceeds approach threshold */
     if (snr > navApproachSnrThresh) {
         DEBUG_PRINT("WPNAV: waypoint %d reached (SNR=%.1f)\n",
@@ -221,6 +214,13 @@ static WpNavSetpoint handleApproaching(float bearing, float snr, bool valid)
         navState      = WP_NAV_HOLDING;
         holdStartTick = xTaskGetTickCount();
         return makeSetpoint(0.0f, 0.0f, WP_NAV_HOLDING);
+    }
+
+    /* Realign if misaligned beyond 2× tolerance */
+    if (fabsf(err) > navAlignTol * 2.0f) {
+        DEBUG_PRINT("WPNAV: misaligned (err=%.1f°), realigning\n", (double)err);
+        navState = WP_NAV_ALIGNING;
+        return makeSetpoint(0.0f, (err > 0.0f ? navYawRate : -navYawRate), WP_NAV_ALIGNING);
     }
 
     return makeSetpoint(navFwdVel, 0.0f, WP_NAV_APPROACHING);
@@ -352,6 +352,14 @@ bool       waypointNavigatorIsMissionComplete(void){ return navState == WP_NAV_C
 int        waypointNavigatorGetNumUniqueFreqs(void){ return numUniqueFreqs; }
 float      waypointNavigatorGetUniqueFreq(int i)   { return (i < numUniqueFreqs) ? uniqueFreqs[i] : 0.0f; }
 void       waypointNavigatorBuildFreqTable(void)   { extractUniqueFrequencies(); }
+
+/** Return the frequency of the waypoint currently being targeted.
+ *  Used by mode_manager to select the correct per-frequency cmdYaw. */
+float      waypointNavigatorGetCurrentFreq(void)
+{
+    if (waypointCount == 0 || currentIndex >= waypointCount) return 0.0f;
+    return waypoints[currentIndex].frequency_hz;
+}
 
 /* ──────────────────────────────────────────────────────────────────────────
  * PARAM

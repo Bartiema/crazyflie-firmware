@@ -49,9 +49,15 @@ static int   writeIdx    = 0;
 static int   sampleCount = 0;   /* total samples pushed, capped at PD_FFT_SIZE */
 
 /* FFT working buffers */
-static float fftIn[PD_FFT_SIZE];                        /* scratch: linearised + windowed */
-static float fftOut[PD_FFT_SIZE];                       /* scratch: complex output        */
-static float spectrum[PD_FFT_CHANNELS][PD_FFT_SIZE / 2]; /* magnitude spectra             */
+static float fftIn[PD_FFT_SIZE];                          /* scratch: linearised + windowed */
+static float fftOut[PD_FFT_SIZE];                         /* scratch: complex output        */
+static float tempMag[PD_FFT_SIZE / 2];                    /* scratch: per-hop magnitude     */
+static float spectrum[PD_FFT_CHANNELS][PD_FFT_SIZE / 2];  /* published averaged spectra     */
+static float spectrumAccum[PD_FFT_CHANNELS][PD_FFT_SIZE / 2]; /* accumulation across hops  */
+static int   accumCount = 0;   /* hops accumulated so far toward PD_FFT_AVERAGES */
+
+/* Scratch buffer for median noise floor — avoids stack allocation */
+static float noiseBins[PD_FFT_SIZE / 2];
 
 /* Shared Hamming window (computed once at init, same formula as Teensy) */
 static float hammingWindow[PD_FFT_SIZE];
@@ -66,6 +72,17 @@ static SemaphoreHandle_t fftMutex;
 static bool initialized = false;
 static bool bufferReady = false;   /* true once first full window is available */
 static int  samplesSinceRun = 0;   /* samples pushed since last pdFftAnalyzerRun() */
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Helpers
+ * ────────────────────────────────────────────────────────────────────────── */
+
+static int floatAscCmp(const void *a, const void *b)
+{
+    float fa = *(const float *)a;
+    float fb = *(const float *)b;
+    return (fa > fb) - (fa < fb);
+}
 
 /* ──────────────────────────────────────────────────────────────────────────
  * Init
@@ -88,10 +105,12 @@ bool pdFftAnalyzerInit(void)
                                                   / (float)(PD_FFT_SIZE - 1));
     }
 
-    memset(sampleBuf, 0, sizeof(sampleBuf));
-    memset(spectrum,  0, sizeof(spectrum));
+    memset(sampleBuf,    0, sizeof(sampleBuf));
+    memset(spectrum,     0, sizeof(spectrum));
+    memset(spectrumAccum,0, sizeof(spectrumAccum));
     writeIdx    = 0;
     sampleCount = 0;
+    accumCount  = 0;
     bufferReady = false;
     initialized = true;
 
@@ -129,20 +148,20 @@ bool pdFftAnalyzerReady(void) { return bufferReady; }
 
 bool pdFftAnalyzerWindowReady(void)
 {
-    return bufferReady && (samplesSinceRun >= PD_FFT_SIZE);
+    return bufferReady && (samplesSinceRun >= PD_FFT_HOP_SIZE);
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
  * FFT execution — call at a lower rate (e.g. every PD_FFT_SIZE samples = 1.28 s)
  * ────────────────────────────────────────────────────────────────────────── */
 
-void pdFftAnalyzerRun(void)
+bool pdFftAnalyzerRun(void)
 {
-    if (!initialized || !bufferReady) return;
+    if (!initialized || !bufferReady) return false;
 
     if (xSemaphoreTake(fftMutex, M2T(10)) != pdTRUE) {
         DEBUG_PRINT("pdFftAnalyzer: mutex timeout in Run\n");
-        return;
+        return false;
     }
 
     /* Snapshot the current write index so we linearise from the oldest sample */
@@ -155,7 +174,7 @@ void pdFftAnalyzerRun(void)
         for (int i = startIdx; i < PD_FFT_SIZE; i++) fftIn[dst++] = (float)sampleBuf[ch][i] / 4095.0f;
         for (int i = 0;        i < startIdx;    i++) fftIn[dst++] = (float)sampleBuf[ch][i] / 4095.0f;
 
-        /* ── Step 2: Remove DC (subtract mean) — identical to Teensy ───── */
+        /* ── Step 2: Remove DC (subtract mean) ─────────────────────────── */
         float mean = 0.0f;
         arm_mean_f32(fftIn, PD_FFT_SIZE, &mean);
         arm_offset_f32(fftIn, -mean, fftIn, PD_FFT_SIZE);
@@ -163,15 +182,36 @@ void pdFftAnalyzerRun(void)
         /* ── Step 3: Apply Hamming window ──────────────────────────────── */
         arm_mult_f32(fftIn, hammingWindow, fftIn, PD_FFT_SIZE);
 
-        /* ── Step 4: Real FFT (in-place, forward) ──────────────────────── */
+        /* ── Step 4: Real FFT ───────────────────────────────────────────── */
         arm_rfft_fast_f32(&fftInstance, fftIn, fftOut, 0);
 
-        /* ── Step 5: Complex magnitude → spectrum[ch][0..FFT_SIZE/2-1] ─── */
-        arm_cmplx_mag_f32(fftOut, spectrum[ch], PD_FFT_SIZE / 2);
+        /* ── Step 5: Complex magnitude ──────────────────────────────────── */
+        arm_cmplx_mag_f32(fftOut, tempMag, PD_FFT_SIZE / 2);
+
+        /* ── Step 6: Accumulate into running sum ────────────────────────── */
+        if (accumCount == 0) {
+            memcpy(spectrumAccum[ch], tempMag, (PD_FFT_SIZE / 2) * sizeof(float));
+        } else {
+            arm_add_f32(spectrumAccum[ch], tempMag, spectrumAccum[ch], PD_FFT_SIZE / 2);
+        }
+    }
+
+    accumCount++;
+    samplesSinceRun = 0;
+
+    /* Publish averaged spectrum once enough hops have been accumulated */
+    if (accumCount >= PD_FFT_AVERAGES) {
+        float scale = 1.0f / (float)accumCount;
+        for (int ch = 0; ch < PD_FFT_CHANNELS; ch++) {
+            arm_scale_f32(spectrumAccum[ch], scale, spectrum[ch], PD_FFT_SIZE / 2);
+        }
+        accumCount = 0;
+        xSemaphoreGive(fftMutex);
+        return true;   /* fresh averaged spectrum is ready */
     }
 
     xSemaphoreGive(fftMutex);
-    samplesSinceRun = 0;
+    return false;  /* still accumulating */
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -207,14 +247,15 @@ void pdFftAnalyzerGetFrequency(int ch, float target_freq_hz,
         if (spectrum[ch][i] > peak) peak = spectrum[ch][i];
     }
 
-    /* ── Calculate noise floor — identical to Teensy ────────────────────── */
-    /*    Exclude target + harmonics ± NOISE_EXCL_BINS each                  */
-    float noise_sum  = 0.0f;
-    int   noise_bins = 0;
+    /* ── Calculate noise floor (median) ────────────────────────────────────
+     * Collect all non-excluded bins then take the median.  The median is
+     * robust against single-frequency spikes (motor harmonics, mains
+     * interference) that would inflate a mean-based estimate.              */
+    int noiseBinCount = 0;
 
     for (int i = 1; i < half; i++) {
         bool excluded = false;
-        for (int h = 0; h < NUM_HARMONICS + 1; h++) {   /* fundamental + harmonics */
+        for (int h = 0; h < NUM_HARMONICS + 1; h++) {
             int exc_center = (int)roundf(target_freq_hz * (h + 1) / FREQ_RESOLUTION);
             if (abs(i - exc_center) <= NOISE_EXCL_BINS) {
                 excluded = true;
@@ -222,12 +263,17 @@ void pdFftAnalyzerGetFrequency(int ch, float target_freq_hz,
             }
         }
         if (!excluded) {
-            noise_sum += spectrum[ch][i];
-            noise_bins++;
+            noiseBins[noiseBinCount++] = spectrum[ch][i];
         }
     }
 
-    float noise_avg = (noise_bins > 0) ? (noise_sum / (float)noise_bins) : 1.0f;
+    float noise_avg = 1.0f;
+    if (noiseBinCount > 0) {
+        qsort(noiseBins, noiseBinCount, sizeof(float), floatAscCmp);
+        noise_avg = (noiseBinCount & 1)
+            ? noiseBins[noiseBinCount / 2]
+            : 0.5f * (noiseBins[noiseBinCount / 2 - 1] + noiseBins[noiseBinCount / 2]);
+    }
 
     result->magnitude = peak;
     result->snr       = (noise_avg > 0.0f) ? (peak / noise_avg) : 0.0f;

@@ -78,23 +78,29 @@ static float bearingSmoothFactor   = 0.3f;   /* BEARING_SMOOTH_FACTOR */
 static float gradientThreshold     = 0.5f;   /* GRADIENT_THRESHOLD (magnitude gate) */
 static float minTotalLight         = 0.05f;  /* MIN_TOTAL_LIGHT — aggregate gate; FFT inputs are ADC/4095 so magnitudes are small */
 static uint8_t fusionMinMapPoints  = 3;      /* MIN_MAP_POINTS */
+/* Consecutive invalid FFT frames before cmdYaw falls back to hold-heading.
+ * Bridges short dropouts so that bearingValid flickering does not cause
+ * large sudden jumps in spYawDeg. */
+static uint8_t bearingHoldFrames   = 3;
 
 /* ──────────────────────────────────────────────────────────────────────────
  * Flight parameters
  * ────────────────────────────────────────────────────────────────────────── */
 static float navAltTarget   = 1.0f;   /* hold altitude via Flow Deck */
 static float navMaxVel      = 0.30f;  /* forward velocity clamp (m/s) */
-static float navFwdSpeed    = 0.20f;  /* forward speed when approaching */
-static uint32_t pdTimeoutMs = 500U;   /* revert MANUAL if no PD data */
+static float navFwdSpeed      = 0.20f;  /* forward speed when approaching */
+static float navAlignFwdTol   = 30.0f;  /* ±bearing (deg) for slow fwd during ALIGNING */
+static float navAlignFwdSpeed = 0.10f;  /* forward speed during rough-aligned ALIGNING (m/s) */
+static uint32_t pdTimeoutMs   = 500U;   /* revert MANUAL if no PD data */
 
 /* ──────────────────────────────────────────────────────────────────────────
  * Default mission — override via upload_frequency_waypoints() from Python
  * ────────────────────────────────────────────────────────────────────────── */
 typedef struct { float freq; float dwell_ms; } WpEntry;
 static const WpEntry DEFAULT_MISSION[] = {
-    { 150.0f, 3000.0f },
-    { 200.0f, 3000.0f },
-    { 150.0f, 2000.0f },
+    { 170.0f, 1000.0f },
+    { 150.0f, 1000.0f },
+    { 170.0f, 1000.0f },
 };
 #define DEFAULT_MISSION_LEN  (sizeof(DEFAULT_MISSION) / sizeof(DEFAULT_MISSION[0]))
 
@@ -109,9 +115,11 @@ static uint32_t  lastPdOkTick = 0;
 
 typedef struct {
     float  freq;
-    float  smoothBearing;    /* low-pass filtered relative bearing (deg) */
+    float  smoothBearing;          /* low-pass filtered relative bearing (deg) */
     bool   bearingValid;
-    float  totalMagnitude;   /* sum of all channel FFT magnitudes */
+    uint8_t bearingInvalidFrames;  /* consecutive frames with bearingValid=false */
+    float  channelSnr[8];          /* per-channel SNR at this frequency */
+    float  totalMagnitude;         /* sum of all channel FFT magnitudes */
     float  maxSnr;
 } FreqState;
 
@@ -121,6 +129,11 @@ static int        numTrackedFreqs = 0;
 /* Per-frequency readings passed to waypoint navigator */
 static WpNavFreqReading freqReadings[MAX_TRACKED_FREQS];
 
+
+/* Per-channel SNR for the active frequency, scaled ×100 and stored as int16
+ * to fit within the 26-byte log packet limit (8 × 2 = 16 bytes).
+ * Divide by 100 in Python to recover SNR in original units. */
+static int16_t logChSnr[8];
 
 /* Logged fusion diagnostics */
 static float logBearingAngle = 0.0f;
@@ -188,6 +201,12 @@ static void applyModeChange(DroneMode req)
         wlsGradientControllerClearMap();
         waypointNavigatorResetMission();
         waypointNavigatorStartMission();
+        /* Reset bearing state on NAVIGATE entry */
+        for (int f = 0; f < numTrackedFreqs; f++) {
+            freqStates[f].smoothBearing        = 0.0f;
+            freqStates[f].bearingValid         = false;
+            freqStates[f].bearingInvalidFrames = 0;
+        }
         /* Reset live setpoint: hold heading until the first FFT frame arrives */
         spFwdVel  = 0.0f;
         spYawDeg  = 0.0f;
@@ -258,10 +277,11 @@ static void modeTask(void *param)
         }
 
         /* ── 4. Run FFT when a new window is ready ──────────────────────── */
+        /* pdFftAnalyzerRun() returns true only when PD_FFT_AVERAGES hops have
+         * been accumulated and a fresh averaged spectrum has been published. */
         bool newSpectrum = false;
         if (pdFftAnalyzerWindowReady()) {
-            pdFftAnalyzerRun();
-            newSpectrum = true;
+            newSpectrum = pdFftAnalyzerRun();
         }
 
         /* ── 5. Process new spectrum ────────────────────────────────────── */
@@ -277,6 +297,21 @@ static void modeTask(void *param)
                 posY = pos.y;
             }
 
+            /* ── Phase 1: compute ALL freqReadings before touching the navigator.
+             *
+             * CRITICAL: waypointNavigatorUpdate() must be called ONCE per FFT
+             * frame, not once per frequency.  Calling it inside the frequency
+             * loop drove it twice per frame; with both lights visible the second
+             * call could advance the state machine a second time in the same
+             * frame (HOLDING→SEARCHING→APPROACHING→HOLDING for the next WP),
+             * causing the drone to "complete" the whole mission without moving.
+             *
+             * cmdYaw for setpoint injection is taken from the current waypoint's
+             * frequency slot so the drone always faces the active target.
+             * ──────────────────────────────────────────────────────────────── */
+            float cmdYaws[MAX_TRACKED_FREQS];   /* per-frequency fused yaw targets */
+            for (int i = 0; i < MAX_TRACKED_FREQS; i++) cmdYaws[i] = currentYaw;
+
             for (int f = 0; f < numTrackedFreqs; f++) {
                 FreqState *fs = &freqStates[f];
 
@@ -287,8 +322,9 @@ static void modeTask(void *param)
                 for (int ch = 0; ch < BA_SENSOR_COUNT; ch++) {
                     PdFreqResult res;
                     pdFftAnalyzerGetFrequency(ch, fs->freq, 2.0f, &res);
-                    magnitudes[ch] = res.magnitude;
-                    totalMag      += res.magnitude;
+                    magnitudes[ch]     = res.magnitude;
+                    fs->channelSnr[ch] = res.snr;
+                    totalMag          += res.magnitude;
                     if (res.snr > maxSnr) maxSnr = res.snr;
                 }
                 fs->totalMagnitude = totalMag;
@@ -304,15 +340,18 @@ static void modeTask(void *param)
                 fs->bearingValid = baOut.valid && (totalMag > minTotalLight);
 
                 if (fs->bearingValid) {
+                    fs->bearingInvalidFrames = 0;
                     /* smooth_bearing += SMOOTH_FACTOR * normalize(bearing - smooth)
-                     * Mirrors blimp.cpp exactly. bearing is relative to drone body. */
+                     * Mirrors blimp.cpp exactly. bearing is relative to body. */
                     float diff = normalizeAngle(baOut.bearing_deg - fs->smoothBearing);
                     fs->smoothBearing = normalizeAngle(
                         fs->smoothBearing + bearingSmoothFactor * diff);
+                } else {
+                    if (fs->bearingInvalidFrames < 255) fs->bearingInvalidFrames++;
                 }
 
                 /* Absolute world-frame bearing heading */
-                float absBearingYaw = normalizeAngle(fs->smoothBearing - currentYaw);
+                float absBearingYaw = normalizeAngle(currentYaw + fs->smoothBearing);
 
                 /* ── WLS: instantaneous gradient (always computed for log) ─ */
                 WlsGradientInput wIn;
@@ -320,7 +359,7 @@ static void modeTask(void *param)
                 WlsGradientOutput wOutInstant;
                 wlsGradientControllerUpdateInstantaneous(&wIn, &wOutInstant);
 
-                /* ── Map update (mirrors blimp.cpp update_map) ───────────── */
+                /* ── Map update ────── */
                 if (currentMode != MODE_MANUAL) {
                     wlsGradientControllerAddMapPoint(posX, posY, totalMag);
                 }
@@ -357,16 +396,22 @@ static void modeTask(void *param)
                     wG = fusionWGradient;
                     cmdYaw = weightedCircularMean(absBearingYaw,   wB,
                                                   gradAngleWorld,  wG);
-                } else if (!fs->bearingValid) {
-                    /* No signal — hover, matches blimp.cpp "No light signal" branch */
+                } else if (!fs->bearingValid &&
+                           fs->bearingInvalidFrames > bearingHoldFrames) {
+                    /* Signal lost for more than bearingHoldFrames consecutive frames —
+                     * fall back to hold-heading.  Short dropouts keep the last valid
+                     * bearing direction to avoid large sudden jumps in spYawDeg. */
                     cmdYaw = currentYaw;
                 }
 
-                /* Store for waypoint navigator and LOG */
+                /* Store reading — navigator will consume these after the loop */
                 freqReadings[f].frequency_hz = fs->freq;
                 freqReadings[f].bearing_deg  = fs->smoothBearing;
                 freqReadings[f].max_snr      = maxSnr;
                 freqReadings[f].valid        = fs->bearingValid;
+
+                /* Store per-frequency fused yaw for phase-2 selection */
+                cmdYaws[f] = cmdYaw;
 
                 /* Update LOG diagnostics (last frequency wins for single display) */
                 logBearingAngle = fs->smoothBearing;
@@ -377,30 +422,69 @@ static void modeTask(void *param)
                 logWG           = wG;
                 logMapSize      = mapSz;
                 logMaxSnr       = maxSnr;
-
-                /* ── Update live setpoint targets (injected below at 100 Hz) ─ */
-                if (currentMode == MODE_NAVIGATE) {
-                    WpNavSetpoint navSp = waypointNavigatorUpdate(
-                        freqReadings, numTrackedFreqs);
-
-                    spFwdVel  = 0.0f;
-                    spHolding = false;
-
-                    if (fs->bearingValid &&
-                        (navSp.state == WP_NAV_APPROACHING ||
-                         navSp.state == WP_NAV_ALIGNING ||
-                         navSp.state == WP_NAV_SEARCHING)) {
-                        spFwdVel = navFwdSpeed;
-                    }
-                    if (navSp.state == WP_NAV_HOLDING ||
-                        navSp.state == WP_NAV_COMPLETE) {
-                        spFwdVel  = 0.0f;
-                        spHolding = true;   /* lock yaw to live currentYaw */
-                    }
-                    spYawDeg = cmdYaw;
+                for (int i = 0; i < 8; i++) {
+                    logChSnr[i] = (int16_t)(fs->channelSnr[i] * 100.0f);
                 }
-                /* MODE_DATA_GATHER: LOG variables updated, no setpoint targets */
             }
+
+            /* ── Phase 2: call navigator ONCE with all readings populated ── */
+            if (currentMode == MODE_NAVIGATE) {
+                WpNavSetpoint navSp = waypointNavigatorUpdate(
+                    freqReadings, numTrackedFreqs);
+
+                /* Pick the cmdYaw for the frequency the navigator is actively
+                 * targeting.  waypointNavigatorGetCurrentFreq() returns the
+                 * current waypoint's frequency; match it against freqStates[].
+                 * Default to currentYaw if no match (e.g. COMPLETE state). */
+                float navCmdYaw    = currentYaw;
+                float activeFreq   = waypointNavigatorGetCurrentFreq();
+                bool  activeFreqValid = false;
+                int   activeF      = -1;          /* index into freqStates[] */
+                for (int f = 0; f < numTrackedFreqs; f++) {
+                    /* Use a tight tolerance (0.5 Hz) — frequencies are at least
+                     * 50 Hz apart in our mission so there is no ambiguity. */
+                    if (fabsf(freqStates[f].freq - activeFreq) < 0.5f) {
+                        navCmdYaw       = cmdYaws[f];
+                        activeFreqValid = freqReadings[f].valid;
+                        activeF         = f;
+                        break;
+                    }
+                }
+
+                spFwdVel  = 0.0f;
+                spHolding = false;
+
+                /* Full forward speed when properly aligned and approaching */
+                if (activeFreqValid && navSp.state == WP_NAV_APPROACHING) {
+                    spFwdVel = navFwdSpeed;
+                }
+                /* Slow forward creep during ALIGNING when roughly facing target —
+                 * avoids stationary spinning while the bearing converges. */
+                else if (activeFreqValid && navSp.state == WP_NAV_ALIGNING && activeF >= 0) {
+                    if (fabsf(freqStates[activeF].smoothBearing) < navAlignFwdTol) {
+                        spFwdVel = navAlignFwdSpeed;
+                    }
+                }
+
+                if (navSp.state == WP_NAV_HOLDING ||
+                    navSp.state == WP_NAV_COMPLETE) {
+                    spFwdVel  = 0.0f;
+                    spHolding = true;   /* lock yaw to live currentYaw */
+                }
+
+                spYawDeg = navCmdYaw;
+
+                /* Overwrite log vars with active-frequency data */
+                if (activeF >= 0) {
+                    logBearingAngle = freqStates[activeF].smoothBearing;
+                    logMaxSnr       = freqStates[activeF].maxSnr;
+                    logCmdYaw       = cmdYaws[activeF];
+                    for (int i = 0; i < 8; i++) {
+                        logChSnr[i] = (int16_t)(freqStates[activeF].channelSnr[i] * 100.0f);
+                    }
+                }
+            }
+            /* MODE_DATA_GATHER: LOG variables updated, no setpoint targets */
         }
 
         /* ── 6. Inject setpoint at 100 Hz in NAVIGATE mode ──────────────── */
@@ -440,11 +524,12 @@ void modeManagerInit(void)
     /* Populate frequency tracking slots from navigator */
     numTrackedFreqs = waypointNavigatorGetNumUniqueFreqs();
     for (int f = 0; f < numTrackedFreqs; f++) {
-        freqStates[f].freq         = waypointNavigatorGetUniqueFreq(f);
-        freqStates[f].smoothBearing = 0.0f;
-        freqStates[f].bearingValid  = false;
-        freqStates[f].totalMagnitude= 0.0f;
-        freqStates[f].maxSnr        = 0.0f;
+        freqStates[f].freq               = waypointNavigatorGetUniqueFreq(f);
+        freqStates[f].smoothBearing        = 0.0f;
+        freqStates[f].bearingValid         = false;
+        freqStates[f].bearingInvalidFrames = 0;
+        freqStates[f].totalMagnitude       = 0.0f;
+        freqStates[f].maxSnr               = 0.0f;
     }
 
     STATIC_MEM_TASK_CREATE(modeTask, modeTask, "modeTask", NULL, MODE_TASK_PRIORITY);
@@ -466,7 +551,11 @@ PARAM_GROUP_START(nav)
     PARAM_ADD(PARAM_FLOAT,               smoothFact,  &bearingSmoothFactor)
     PARAM_ADD(PARAM_FLOAT,               gradThresh,  &gradientThreshold)
     PARAM_ADD(PARAM_FLOAT,               minLight,    &minTotalLight)
-    PARAM_ADD(PARAM_UINT8,               minMapPts,   &fusionMinMapPoints)
+    PARAM_ADD(PARAM_UINT8,               minMapPts,    &fusionMinMapPoints)
+    PARAM_ADD(PARAM_UINT8,               bearingHold,  &bearingHoldFrames)
+    /* Aligning forward motion */
+    PARAM_ADD(PARAM_FLOAT,               alignFwdTol,  &navAlignFwdTol)
+    PARAM_ADD(PARAM_FLOAT,               alignFwdSpd,  &navAlignFwdSpeed)
 PARAM_GROUP_STOP(nav)
 
 /* ── LOG ───────────────────────────────────────────────────────────────── */
@@ -480,4 +569,13 @@ LOG_GROUP_START(nav)
     LOG_ADD(LOG_FLOAT,  wG,      &logWG)
     LOG_ADD(LOG_FLOAT,  snr,     &logMaxSnr)
     LOG_ADD(LOG_INT32,  mapSize, &logMapSize)
+    /* Per-channel SNR ×100 as int16 (divide by 100 in Python to recover SNR) */
+    LOG_ADD(LOG_INT16,  snr0,    &logChSnr[0])
+    LOG_ADD(LOG_INT16,  snr1,    &logChSnr[1])
+    LOG_ADD(LOG_INT16,  snr2,    &logChSnr[2])
+    LOG_ADD(LOG_INT16,  snr3,    &logChSnr[3])
+    LOG_ADD(LOG_INT16,  snr4,    &logChSnr[4])
+    LOG_ADD(LOG_INT16,  snr5,    &logChSnr[5])
+    LOG_ADD(LOG_INT16,  snr6,    &logChSnr[6])
+    LOG_ADD(LOG_INT16,  snr7,    &logChSnr[7])
 LOG_GROUP_STOP(nav)
