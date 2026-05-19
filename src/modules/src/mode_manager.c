@@ -122,6 +122,7 @@ static int16_t logChSnr[8];
 static float   logBearingAngle = 0.0f;
 static float   logGradAngle    = 0.0f;
 static float   logGradMag      = 0.0f;
+static float   logGradR2       = 0.0f;   /* live R² — updated every FFT frame */
 static float   logCmdYaw       = 0.0f;
 static float   logWB           = 1.0f;
 static float   logWG           = 0.0f;
@@ -379,8 +380,10 @@ static void modeTask(void *param)
                     estimatorKalmanGetEstimatedPos(&pos);
                     posX = pos.x; posY = pos.y;
                 }
+                /* Store max SNR across all channels — empirically better than
+                 * summed magnitude for map quality (from data-gathering runs). */
                 if (currentMode != MODE_MANUAL)
-                    wlsGradientControllerAddMapPoint(posX, posY, totalMag);
+                    wlsGradientControllerAddMapPoint(posX, posY, maxSnrLocal);
 
                 WlsGradientOutput wOutMap;
                 bool gradValid = wlsGradientControllerUpdateMap(posX, posY, &wOutMap);
@@ -391,6 +394,7 @@ static void modeTask(void *param)
 
                 logGradAngle = wOutMap.gradAngleDeg;
                 logGradMag   = wOutMap.gradMagnitude;
+                logGradR2    = wOutMap.r_squared;
                 logMapSize   = mapSz;
 
                 /* ── Heading fusion ───────────────────────────────────── */
@@ -409,8 +413,10 @@ static void modeTask(void *param)
                 float wB = 1.0f, wG = 0.0f;
 
                 if (bearingValid && gradReady) {
-                    float gradAngleWorld = normalizeAngle(
-                        currentYaw + wOutMap.gradAngleDeg);
+                    /* Map gradient is computed from Kalman world-frame XY
+                     * positions, so gradAngleDeg is already world-frame.
+                     * Do NOT add currentYaw — that would rotate it twice. */
+                    float gradAngleWorld = normalizeAngle(wOutMap.gradAngleDeg);
                     wB = fusionWBearing; wG = fusionWGradient;
                     fusedYaw = weightedCircularMean(absBearingYaw, wB,
                                                     gradAngleWorld, wG);
@@ -533,6 +539,7 @@ LOG_GROUP_START(nav)
     LOG_ADD(LOG_FLOAT,  bearing, &logBearingAngle)
     LOG_ADD(LOG_FLOAT,  gradAng, &logGradAngle)
     LOG_ADD(LOG_FLOAT,  gradMag, &logGradMag)
+    LOG_ADD(LOG_FLOAT,  gradR2,  &logGradR2)
     LOG_ADD(LOG_FLOAT,  cmdYaw,  &logCmdYaw)
     LOG_ADD(LOG_FLOAT,  wB,      &logWB)
     LOG_ADD(LOG_FLOAT,  wG,      &logWG)

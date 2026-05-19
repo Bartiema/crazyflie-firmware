@@ -104,7 +104,7 @@ static float mapWEps          = 0.01f;
 static float mapMinImprovement = 0.05f;
 
 /** Map grid resolution in metres — one cell per GRID_RES × GRID_RES */
-static float mapGridRes       = 0.20f;
+static float mapGridRes       = 0.05f;
 
 /* ──────────────────────────────────────────────────────────────────────────
  * Spatial measurement map
@@ -421,12 +421,8 @@ bool wlsGradientControllerUpdateMap(float cx, float cy,
     float r2 = (ss_tot > 1e-10f) ? (1.0f - ss_res / ss_tot) : 0.0f;
     out->r_squared = r2;
 
-    if (r2 < mapR2Threshold) {
-        DEBUG_PRINT("WLS map: poor fit R²=%.3f (threshold=%.2f)\n",
-                    (double)r2, (double)mapR2Threshold);
-        return false;
-    }
-
+    /* Compute gradient magnitude and angle unconditionally — caller can
+     * inspect these even when the R² gate rejects the fit. */
     float mag = sqrtf(gx*gx + gy*gy);
     out->gradX         = gx;
     out->gradY         = gy;
@@ -435,6 +431,12 @@ bool wlsGradientControllerUpdateMap(float cx, float cy,
     float ang = atan2f(gy, gx) * 180.0f / (float)M_PI;
     if (ang < 0.0f) ang += 360.0f;
     out->gradAngleDeg = ang;
+
+    if (r2 < mapR2Threshold) {
+        DEBUG_PRINT("WLS map: poor fit R²=%.3f (threshold=%.2f)\n",
+                    (double)r2, (double)mapR2Threshold);
+        return false;
+    }
 
     if (mag < wlsMinMag) {
         out->vx = out->vy = 0.0f;
