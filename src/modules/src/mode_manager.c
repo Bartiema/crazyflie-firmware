@@ -17,9 +17,10 @@
  * updates happen at ~2 Hz (every PD_FFT_AVERAGES hops).
  *
  * Yaw control uses absolute angle setpoints throughout so the CrazyFlie's
- * tuned position controller handles the actual rotation.  SEARCHING is the
- * only state that advances spYawDeg at 100 Hz (continuous scan rotation);
- * all other states set spYawDeg once per FFT frame from the bearing.
+ * tuned position controller handles the actual rotation.  spYawDeg is set
+ * once per FFT frame from the raw bearing (world-frame: currentYaw + rawBearing).
+ * Scan rotation in SEARCHING only runs when no bearing has been acquired yet;
+ * brief SNR dropouts hold the last heading instead of rotating away.
  */
 
 #define DEBUG_MODULE "MODEMGR"
@@ -34,7 +35,6 @@
 #include "stabilizer_types.h"
 #include "estimator.h"
 #include "estimator_kalman.h"
-#include "sensfusion6.h"
 #include "log.h"
 #include "param.h"
 #include "debug.h"
@@ -174,21 +174,21 @@ static NavState handleSearching(float snr, bool valid)
 }
 
 /* Signal acquired but not aligned — rotate toward the target.
- * Allows a slow forward creep when roughly facing the right direction. */
-static NavState handleAligning(float bearing, float snr, bool valid, float currentYaw)
+ * Allows a slow forward creep when roughly facing the right direction.
+ * spYawDeg is set after the switch from fusedYaw (raw world-frame bearing). */
+static NavState handleAligning(float bearing, float snr, bool valid)
 {
     spFwdVel = (fabsf(bearing) < navAlignFwdTol) ? navAlignFwdSpeed : 0.0f;
-    spYawDeg = normalizeAngle(currentYaw + smoothBearing);
     if (!valid || snr < navAcqSnr)     return NAV_SEARCHING;
     if (fabsf(bearing) < navAlignTol)  return NAV_APPROACHING;
     return NAV_ALIGNING;
 }
 
-/* Aligned — fly forward while continuously tracking the bearing. */
-static NavState handleApproaching(float bearing, float snr, bool valid, float currentYaw)
+/* Aligned — fly forward while continuously tracking the bearing.
+ * spYawDeg is set after the switch from fusedYaw (raw world-frame bearing). */
+static NavState handleApproaching(float bearing, float snr, bool valid)
 {
     spFwdVel = navFwdSpeed;
-    spYawDeg = normalizeAngle(currentYaw + smoothBearing);
     if (!valid || snr < navAcqSnr)             return NAV_SEARCHING;
     if (fabsf(bearing) > navAlignTol * 2.0f)   return NAV_ALIGNING;
     if (snr > navArrSnr) {
@@ -292,11 +292,17 @@ static void modeTask(void *param)
             }
         }
 
-        /* 3. Current yaw — needed every tick */
+        /* 3. Current yaw from Kalman estimator — sensfusion6 is only updated
+         * by the complementary estimator path; when the Kalman estimator is
+         * active sensfusion6 is never fed sensor data and returns 0° always.
+         * Extract yaw from the Kalman rotation matrix: R is row-major [3][3],
+         * so R[1][0] = sin(yaw)*cos(pitch) and R[0][0] = cos(yaw)*cos(pitch),
+         * giving yaw = atan2(R[1][0], R[0][0]) for all practical pitch angles. */
         float currentYaw = 0.0f;
         {
-            float roll = 0.0f, pitch = 0.0f;
-            sensfusion6GetEulerRPY(&roll, &pitch, &currentYaw);
+            float R[9];
+            estimatorKalmanGetEstimatedRot(R);
+            currentYaw = atan2f(R[3], R[0]) * 180.0f / (float)M_PI;
         }
 
         /* 4. Run FFT when a new hop is ready */
@@ -349,8 +355,10 @@ static void modeTask(void *param)
                     bearingInvalidFrames = 0;
                     if (!bearingInitialized) {
                         /* First valid reading after reset — snap directly so the
-                         * filter starts from the true bearing, not from zero. */
-                        smoothBearing      = baOut.bearing_deg;
+                         * filter starts from the true bearing, not from zero.
+                         * Normalize to [-180°, 180°) so fabsf(smoothBearing) is
+                         * a true angular error (baOut is [0°, 360°): 270° = right). */
+                        smoothBearing      = normalizeAngle(baOut.bearing_deg);
                         bearingInitialized = true;
                     } else {
                         float diff = normalizeAngle(baOut.bearing_deg - smoothBearing);
@@ -420,11 +428,11 @@ static void modeTask(void *param)
                             break;
                         case NAV_ALIGNING:
                             navState = handleAligning(smoothBearing, maxSnrLocal,
-                                                      bearingValid, currentYaw);
+                                                      bearingValid);
                             break;
                         case NAV_APPROACHING:
                             navState = handleApproaching(smoothBearing, maxSnrLocal,
-                                                         bearingValid, currentYaw);
+                                                         bearingValid);
                             break;
                         default:
                             break;
