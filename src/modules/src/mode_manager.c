@@ -52,12 +52,13 @@
 /* Values chosen to match the old wpNav.state numbers that Python already
  * knows about (DWELLING=4 was HOLDING, COMPLETE=6 was COMPLETE). */
 typedef enum {
-    NAV_IDLE       = 0,
-    NAV_SEARCHING  = 1,
-    NAV_ALIGNING   = 2,
-    NAV_APPROACHING= 3,
-    NAV_DWELLING   = 4,
-    NAV_COMPLETE   = 6,
+    NAV_IDLE        = 0,
+    NAV_SEARCHING   = 1,
+    NAV_ALIGNING    = 2,
+    NAV_APPROACHING = 3,
+    NAV_DWELLING    = 4,
+    NAV_RECOVERING  = 5,   /* SNR lost but gradient map reliable — keep moving */
+    NAV_COMPLETE    = 6,
 } NavState;
 
 /* ── Waypoints ──────────────────────────────────────────────────────────── */
@@ -101,7 +102,7 @@ static uint32_t pdTimeoutMs     = 500U;
 static const NavWaypoint DEFAULT_MISSION[] = {
     { 150.0f, 1000.0f },
     { 170.0f, 1000.0f },
-    { 150.0f, 1000.0f },
+    // { 150.0f, 1000.0f },
 };
 #define DEFAULT_MISSION_LEN  (sizeof(DEFAULT_MISSION) / sizeof(DEFAULT_MISSION[0]))
 
@@ -185,11 +186,15 @@ static NavState handleSearching(float snr, bool valid)
  * No forward motion until the drone is tracking fusedYaw to within
  * navAlignTol degrees (see handleApproaching).
  * spYawDeg is set from fusedYaw after the switch statement. */
-static NavState handleAligning(float headingErr, float snr, bool valid)
+static NavState handleAligning(float headingErr, float snr, bool valid, bool gradReady)
 {
     spFwdVel = 0.0f;
-    if (!valid || snr < navAcqSnr)    return NAV_SEARCHING;
-    if (headingErr < navAlignTol)     return NAV_APPROACHING;
+    if (!valid || snr < navAcqSnr) {
+        /* SNR lost — if the spatial map is still reliable, move toward
+         * the gradient direction to escape the occluded region. */
+        return gradReady ? NAV_RECOVERING : NAV_SEARCHING;
+    }
+    if (headingErr < navAlignTol)  return NAV_APPROACHING;
     return NAV_ALIGNING;
 }
 
@@ -198,16 +203,34 @@ static NavState handleAligning(float headingErr, float snr, bool valid)
  * Uses heading tracking error (|fusedYaw − currentYaw|) rather than raw
  * bearing so the gradient component of the fused command does not
  * spuriously trigger a return to ALIGNING. */
-static NavState handleApproaching(float headingErr, float snr, bool valid)
+static NavState handleApproaching(float headingErr, float snr, bool valid, bool gradReady)
 {
     spFwdVel = navFwdSpeed;
-    if (!valid || snr < navAcqSnr)           return NAV_SEARCHING;
-    if (headingErr > navAlignTol * 2.0f)     return NAV_ALIGNING;
+    if (!valid || snr < navAcqSnr) {
+        /* SNR lost — if the spatial map is still reliable, switch to
+         * gradient-only recovery instead of stopping to search. */
+        return gradReady ? NAV_RECOVERING : NAV_SEARCHING;
+    }
+    if (headingErr > navAlignTol * 2.0f)  return NAV_ALIGNING;
     if (snr > navArrSnr) {
         dwellStart = xTaskGetTickCount();
         return NAV_DWELLING;
     }
     return NAV_APPROACHING;
+}
+
+/* Gradient-only recovery — bearing/SNR lost but spatial map is reliable.
+ * Keeps flying forward on the gradient direction so the drone can exit
+ * an occluded region (e.g. behind an obstacle) without stopping to scan.
+ * Exits back to APPROACHING when SNR recovers; falls to SEARCHING only
+ * when the gradient map itself becomes unreliable. */
+static NavState handleRecovering(float headingErr, float snr, bool valid, bool gradReady)
+{
+    spFwdVel = navFwdSpeed;
+    if (!gradReady)                       return NAV_SEARCHING;  /* map gone too */
+    if (valid && snr >= navAcqSnr)        return NAV_APPROACHING; /* SNR back */
+    if (headingErr > navAlignTol * 2.0f)  return NAV_ALIGNING;   /* re-align to gradient */
+    return NAV_RECOVERING;
 }
 
 /* Arrived — hold position for dwell_ms then advance to the next waypoint. */
@@ -436,16 +459,20 @@ static void modeTask(void *param)
                 float wB = 1.0f, wG = 0.0f;
 
                 if (bearingValid && gradReady) {
-                    /* Map gradient is computed from Kalman world-frame XY
-                     * positions, so gradAngleDeg is already world-frame.
-                     * Do NOT add currentYaw — that would rotate it twice. */
+                    /* Both sources available: weighted circular mean. */
                     float gradAngleWorld = normalizeAngle(wOutMap.gradAngleDeg);
                     wB = fusionWBearing; wG = fusionWGradient;
                     fusedYaw = weightedCircularMean(absBearingYaw, wB,
                                                     gradAngleWorld, wG);
+                } else if (!bearingValid && gradReady) {
+                    /* Bearing lost (obstacle / out of range) but the spatial
+                     * map is reliable — navigate on gradient alone so the
+                     * drone can move out of the occluded region. */
+                    fusedYaw = normalizeAngle(wOutMap.gradAngleDeg);
+                    wB = 0.0f; wG = 1.0f;
                 } else if (!bearingValid &&
                            bearingInvalidFrames > bearingHoldFrames) {
-                    fusedYaw = currentYaw;
+                    fusedYaw = currentYaw;   /* nothing reliable — hold heading */
                 }
                 logCmdYaw = fusedYaw; logWB = wB; logWG = wG;
 
@@ -463,18 +490,24 @@ static void modeTask(void *param)
                             break;
                         case NAV_ALIGNING:
                             navState = handleAligning(headingErr, maxSnrLocal,
-                                                      bearingValid);
+                                                      bearingValid, gradReady);
                             break;
                         case NAV_APPROACHING:
                             navState = handleApproaching(headingErr, maxSnrLocal,
-                                                         bearingValid);
+                                                         bearingValid, gradReady);
+                            break;
+                        case NAV_RECOVERING:
+                            navState = handleRecovering(headingErr, maxSnrLocal,
+                                                        bearingValid, gradReady);
                             break;
                         default:
                             break;
                     }
 
-                    /* ALIGNING and APPROACHING use the fused heading */
-                    if (navState == NAV_ALIGNING || navState == NAV_APPROACHING)
+                    /* All active states use the fused heading */
+                    if (navState == NAV_ALIGNING   ||
+                        navState == NAV_APPROACHING ||
+                        navState == NAV_RECOVERING)
                         spYawDeg = fusedYaw;
                 }
             }
