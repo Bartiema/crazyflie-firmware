@@ -34,12 +34,8 @@
 /** Number of photodiode channels. */
 #define PD_FFT_CHANNELS   8
 
-/** Samples between successive FFT runs (50% overlap). */
+/** Samples between successive FFT runs (50% overlap → ~3.9 Hz hop rate). */
 #define PD_FFT_HOP_SIZE   (PD_FFT_SIZE / 2)
-
-/** Number of overlapping FFT frames averaged before publishing the spectrum.
- *  SNR improves by √PD_FFT_AVERAGES. Set to 1 to disable averaging. */
-#define PD_FFT_AVERAGES   2
 
 /**
  * Result of a single-frequency analysis for one channel.
@@ -72,8 +68,8 @@ bool pdFftAnalyzerReady(void);
 
 /**
  * pdFftAnalyzerWindowReady()
- * Returns true when PD_FFT_SIZE new samples have been pushed since the last
- * call to pdFftAnalyzerRun(). Use this in modeTask to trigger FFT execution.
+ * Returns true when PD_FFT_HOP_SIZE new samples have been pushed since the
+ * last call to pdFftAnalyzerRun(). Fires at ~3.9 Hz (every hop).
  */
 bool pdFftAnalyzerWindowReady(void);
 
@@ -84,17 +80,16 @@ bool pdFftAnalyzerWindowReady(void);
  * pdFftAnalyzerReady() returns true and a new window is due.
  * Thread-safe: takes an internal mutex.
  *
- * Returns true when a freshly averaged spectrum has been published (i.e. every
- * PD_FFT_AVERAGES hops). Returns false on intermediate hops where the spectrum
- * is still accumulating. Callers should only process the spectrum on true.
+ * Returns true when a freshly EMA-smoothed spectrum is available — i.e. after
+ * every hop (~3.9 Hz). Always returns true once the buffer is ready.
  */
 bool pdFftAnalyzerRun(void);
 
 /**
  * pdFftAnalyzerResetAccumulator()
- * Discard the Welch averaging accumulator and restart from scratch.
- * Call on waypoint transitions so the new frequency's spectrum is not
- * contaminated by frames accumulated for the previous frequency.
+ * Zero the EMA spectrum buffer and re-seed from scratch on the next hop.
+ * Call on waypoint transitions so stale bins from the old frequency do
+ * not bleed into the new frequency's spectrum.
  * Thread-safe: takes the internal mutex.
  */
 void pdFftAnalyzerResetAccumulator(void);

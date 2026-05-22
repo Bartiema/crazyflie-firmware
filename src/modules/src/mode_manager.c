@@ -14,7 +14,7 @@
  *
  * Each handler sets spFwdVel / spYawDeg and returns the next NavState.
  * The 100 Hz task injects the live setpoint every tick; FFT-based state
- * updates happen at ~2 Hz (every PD_FFT_AVERAGES hops).
+ * updates happen at ~4 Hz (every hop; EMA-smoothed spectrum published each time).
  *
  * Yaw control uses absolute angle setpoints throughout so the CrazyFlie's
  * tuned position controller handles the actual rotation.  spYawDeg is set
