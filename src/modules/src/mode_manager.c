@@ -83,6 +83,14 @@ static float    minTotalLight       = 0.05f;
 static uint8_t  fusionMinMapPoints  = 3;
 static uint8_t  bearingHoldFrames   = 3;
 
+/* Per-channel magnitude IIR — applied after Welch publication.
+ * 0 = no smoothing (pass-through), 1 = fully frozen.
+ * Smoothed magnitudes feed the bearing estimator; smoothed SNR
+ * is reconstructed from the same smoothed magnitude ÷ the
+ * current-frame noise floor so the SNR gate stays calibrated. */
+static float    magIirAlpha         = 0.5f;
+static float    smoothMag[BA_SENSOR_COUNT];
+
 /* ── Flight parameters ──────────────────────────────────────────────────── */
 static float    navAltTarget    = 1.0f;
 static float    navMaxVel       = 0.30f;
@@ -153,6 +161,7 @@ static void resetActiveState(void)
     bearingValid         = false;
     bearingInvalidFrames = 0;
     spFwdVel             = 0.0f;
+    memset(smoothMag, 0, sizeof(smoothMag));   /* clear IIR state on freq change */
     wlsGradientControllerClearMap();
     pdFftAnalyzerResetAccumulator();
     memset(logChSnr, 0, sizeof(logChSnr));
@@ -337,10 +346,22 @@ static void modeTask(void *param)
                 for (int ch = 0; ch < BA_SENSOR_COUNT; ch++) {
                     PdFreqResult res;
                     pdFftAnalyzerGetFrequency(ch, activeFreq, 2.0f, &res);
-                    magnitudes[ch]  = res.magnitude;
-                    logChSnr[ch]    = (int16_t)(res.snr * 100.0f);
-                    totalMag       += res.magnitude;
-                    if (res.snr > maxSnrLocal) maxSnrLocal = res.snr;
+
+                    /* Per-channel magnitude IIR: smooths all 8 channels with
+                     * the same alpha so relative ratios (= bearing cue) are
+                     * preserved while frame-to-frame noise is reduced.
+                     * SNR is reconstructed as smoothedMag / noiseFl so the
+                     * SNR gate stays correctly calibrated against the current
+                     * noise floor rather than the smoothed one. */
+                    smoothMag[ch] = magIirAlpha * smoothMag[ch]
+                                  + (1.0f - magIirAlpha) * res.magnitude;
+                    magnitudes[ch] = smoothMag[ch];
+                    float noiseFl  = (res.snr > 0.0f) ? (res.magnitude / res.snr) : 1.0f;
+                    float smSnr    = smoothMag[ch] / noiseFl;
+
+                    logChSnr[ch]    = (int16_t)(smSnr * 100.0f);
+                    totalMag       += smoothMag[ch];
+                    if (smSnr > maxSnrLocal) maxSnrLocal = smSnr;
                 }
                 logMaxSnr = maxSnrLocal;
 
@@ -522,6 +543,7 @@ PARAM_GROUP_START(nav)
     PARAM_ADD(PARAM_UINT8,               bearingHold, &bearingHoldFrames)
     PARAM_ADD(PARAM_FLOAT,               alignFwdTol, &navAlignFwdTol)
     PARAM_ADD(PARAM_FLOAT,               alignFwdSpd, &navAlignFwdSpeed)
+    PARAM_ADD(PARAM_FLOAT,               magAlpha,    &magIirAlpha)
 PARAM_GROUP_STOP(nav)
 
 /* wpNav group kept for Python compatibility (same param names as before) */
