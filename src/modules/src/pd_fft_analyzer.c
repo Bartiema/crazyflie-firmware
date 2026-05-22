@@ -27,7 +27,6 @@
 
 #include "debug.h"
 #include "static_mem.h"
-#include "param.h"
 
 #include "pd_fft_analyzer.h"
 
@@ -49,21 +48,13 @@ static uint16_t sampleBuf[PD_FFT_CHANNELS][PD_FFT_SIZE];
 static int   writeIdx    = 0;
 static int   sampleCount = 0;   /* total samples pushed, capped at PD_FFT_SIZE */
 
-/* EMA smoothing factor applied to the per-bin spectrum each hop.
- * 0 = no smoothing (pass-through), 1 = fully frozen.
- * alpha=0.7 gives ~2.4× SNR improvement (≈ N=5 block averages) while
- * publishing a fresh spectrum after every hop (~4 Hz). */
-static float specEmaAlpha = 0.7f;
-
-/* True once the spectrum[] array has been seeded with a real measurement.
- * First hop after init/reset copies directly; subsequent hops EMA-blend. */
-static bool spectrumInitialized = false;
-
 /* FFT working buffers */
 static float fftIn[PD_FFT_SIZE];                          /* scratch: linearised + windowed */
 static float fftOut[PD_FFT_SIZE];                         /* scratch: complex output        */
 static float tempMag[PD_FFT_SIZE / 2];                    /* scratch: per-hop magnitude     */
-static float spectrum[PD_FFT_CHANNELS][PD_FFT_SIZE / 2];  /* EMA-smoothed live spectra      */
+static float spectrum[PD_FFT_CHANNELS][PD_FFT_SIZE / 2];  /* published averaged spectra     */
+static float spectrumAccum[PD_FFT_CHANNELS][PD_FFT_SIZE / 2]; /* accumulation across hops  */
+static int   accumCount = 0;   /* hops accumulated so far toward PD_FFT_AVERAGES */
 
 /* Scratch buffer for median noise floor — avoids stack allocation */
 static float noiseBins[PD_FFT_SIZE / 2];
@@ -114,13 +105,14 @@ bool pdFftAnalyzerInit(void)
                                                   / (float)(PD_FFT_SIZE - 1));
     }
 
-    memset(sampleBuf, 0, sizeof(sampleBuf));
-    memset(spectrum,  0, sizeof(spectrum));
-    writeIdx             = 0;
-    sampleCount          = 0;
-    spectrumInitialized  = false;
-    bufferReady          = false;
-    initialized          = true;
+    memset(sampleBuf,    0, sizeof(sampleBuf));
+    memset(spectrum,     0, sizeof(spectrum));
+    memset(spectrumAccum,0, sizeof(spectrumAccum));
+    writeIdx    = 0;
+    sampleCount = 0;
+    accumCount  = 0;
+    bufferReady = false;
+    initialized = true;
 
     DEBUG_PRINT("pdFftAnalyzer: init OK (FFT=%d, SR=%.0f Hz, res=%.4f Hz/bin)\n",
                 PD_FFT_SIZE, (double)PD_SAMPLE_RATE_HZ, (double)FREQ_RESOLUTION);
@@ -196,26 +188,30 @@ bool pdFftAnalyzerRun(void)
         /* ── Step 5: Complex magnitude ──────────────────────────────────── */
         arm_cmplx_mag_f32(fftOut, tempMag, PD_FFT_SIZE / 2);
 
-        /* ── Step 6: EMA blend into live spectrum ───────────────────────── */
-        if (!spectrumInitialized) {
-            /* First hop after init or reset — copy directly so spectrum[]
-             * starts at the true value rather than (1−alpha)-attenuated. */
-            memcpy(spectrum[ch], tempMag, (PD_FFT_SIZE / 2) * sizeof(float));
+        /* ── Step 6: Accumulate into running sum ────────────────────────── */
+        if (accumCount == 0) {
+            memcpy(spectrumAccum[ch], tempMag, (PD_FFT_SIZE / 2) * sizeof(float));
         } else {
-            /* spectrum[k] = alpha·spectrum[k] + (1−alpha)·tempMag[k]
-             * Same alpha for all 8 channels → inter-channel ratios
-             * (bearing cue) are preserved; only common noise is suppressed. */
-            arm_scale_f32(spectrum[ch], specEmaAlpha,        spectrum[ch], PD_FFT_SIZE / 2);
-            arm_scale_f32(tempMag,      1.0f - specEmaAlpha, tempMag,      PD_FFT_SIZE / 2);
-            arm_add_f32(spectrum[ch], tempMag, spectrum[ch], PD_FFT_SIZE / 2);
+            arm_add_f32(spectrumAccum[ch], tempMag, spectrumAccum[ch], PD_FFT_SIZE / 2);
         }
     }
 
-    spectrumInitialized = true;
-    samplesSinceRun     = 0;
+    accumCount++;
+    samplesSinceRun = 0;
+
+    /* Publish averaged spectrum once enough hops have been accumulated */
+    if (accumCount >= PD_FFT_AVERAGES) {
+        float scale = 1.0f / (float)accumCount;
+        for (int ch = 0; ch < PD_FFT_CHANNELS; ch++) {
+            arm_scale_f32(spectrumAccum[ch], scale, spectrum[ch], PD_FFT_SIZE / 2);
+        }
+        accumCount = 0;
+        xSemaphoreGive(fftMutex);
+        return true;   /* fresh averaged spectrum is ready */
+    }
 
     xSemaphoreGive(fftMutex);
-    return true;   /* fresh EMA spectrum available after every hop (~4 Hz) */
+    return false;  /* still accumulating */
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -229,11 +225,9 @@ void pdFftAnalyzerResetAccumulator(void)
         DEBUG_PRINT("pdFftAnalyzer: mutex timeout in ResetAccumulator\n");
         return;
     }
-    /* Zero the EMA buffer so stale frequency-A bins do not bleed into
-     * the new frequency-B spectrum.  Next hop re-seeds from scratch. */
-    memset(spectrum, 0, sizeof(spectrum));
-    spectrumInitialized = false;
-    samplesSinceRun     = 0;
+    memset(spectrumAccum, 0, sizeof(spectrumAccum));
+    accumCount      = 0;
+    samplesSinceRun = 0;
     xSemaphoreGive(fftMutex);
 }
 
@@ -303,13 +297,3 @@ void pdFftAnalyzerGetFrequency(int ch, float target_freq_hz,
 
     xSemaphoreGive(fftMutex);
 }
-
-/* ──────────────────────────────────────────────────────────────────────────
- * Parameters
- * ────────────────────────────────────────────────────────────────────────── */
-
-PARAM_GROUP_START(pdFft)
-    /** EMA alpha applied to every spectral bin each hop (0=off, 1=frozen).
-     *  Default 0.7 → ~2.4× SNR vs single-hop, still publishes at ~4 Hz. */
-    PARAM_ADD(PARAM_FLOAT, specAlpha, &specEmaAlpha)
-PARAM_GROUP_STOP(pdFft)
