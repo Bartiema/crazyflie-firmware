@@ -95,8 +95,6 @@ static float    smoothMag[BA_SENSOR_COUNT];
 static float    navAltTarget    = 1.0f;
 static float    navMaxVel       = 0.30f;
 static float    navFwdSpeed     = 0.20f;
-static float    navAlignFwdTol  = 30.0f;
-static float    navAlignFwdSpeed= 0.10f;
 static uint32_t pdTimeoutMs     = 500U;
 
 /* ── Default mission ────────────────────────────────────────────────────── */
@@ -183,24 +181,28 @@ static NavState handleSearching(float snr, bool valid)
     return NAV_SEARCHING;
 }
 
-/* Signal acquired but not aligned — rotate toward the target.
- * Allows a slow forward creep when roughly facing the right direction.
- * spYawDeg is set after the switch from fusedYaw (raw world-frame bearing). */
-static NavState handleAligning(float bearing, float snr, bool valid)
+/* Signal acquired but not aligned — rotate toward the fused heading.
+ * No forward motion until the drone is tracking fusedYaw to within
+ * navAlignTol degrees (see handleApproaching).
+ * spYawDeg is set from fusedYaw after the switch statement. */
+static NavState handleAligning(float headingErr, float snr, bool valid)
 {
-    spFwdVel = (fabsf(bearing) < navAlignFwdTol) ? navAlignFwdSpeed : 0.0f;
-    if (!valid || snr < navAcqSnr)     return NAV_SEARCHING;
-    if (fabsf(bearing) < navAlignTol)  return NAV_APPROACHING;
+    spFwdVel = 0.0f;
+    if (!valid || snr < navAcqSnr)    return NAV_SEARCHING;
+    if (headingErr < navAlignTol)     return NAV_APPROACHING;
     return NAV_ALIGNING;
 }
 
-/* Aligned — fly forward while continuously tracking the bearing.
- * spYawDeg is set after the switch from fusedYaw (raw world-frame bearing). */
-static NavState handleApproaching(float bearing, float snr, bool valid)
+/* Tracking the fused heading — fly forward.
+ * Gate: drone must be within navAlignTol of fusedYaw to move forward.
+ * Uses heading tracking error (|fusedYaw − currentYaw|) rather than raw
+ * bearing so the gradient component of the fused command does not
+ * spuriously trigger a return to ALIGNING. */
+static NavState handleApproaching(float headingErr, float snr, bool valid)
 {
     spFwdVel = navFwdSpeed;
-    if (!valid || snr < navAcqSnr)             return NAV_SEARCHING;
-    if (fabsf(bearing) > navAlignTol * 2.0f)   return NAV_ALIGNING;
+    if (!valid || snr < navAcqSnr)           return NAV_SEARCHING;
+    if (headingErr > navAlignTol * 2.0f)     return NAV_ALIGNING;
     if (snr > navArrSnr) {
         dwellStart = xTaskGetTickCount();
         return NAV_DWELLING;
@@ -449,16 +451,22 @@ static void modeTask(void *param)
 
                 /* ── State machine update (FFT-rate) ──────────────────── */
                 if (currentMode == MODE_NAVIGATE) {
+                    /* Heading tracking error — how far the drone's actual yaw
+                     * deviates from the fused command.  Used instead of raw
+                     * bearing so the gradient component of fusedYaw does not
+                     * cause spurious ALIGNING re-entries. */
+                    float headingErr = fabsf(normalizeAngle(fusedYaw - currentYaw));
+
                     switch (navState) {
                         case NAV_SEARCHING:
                             navState = handleSearching(maxSnrLocal, bearingValid);
                             break;
                         case NAV_ALIGNING:
-                            navState = handleAligning(smoothBearing, maxSnrLocal,
+                            navState = handleAligning(headingErr, maxSnrLocal,
                                                       bearingValid);
                             break;
                         case NAV_APPROACHING:
-                            navState = handleApproaching(smoothBearing, maxSnrLocal,
+                            navState = handleApproaching(headingErr, maxSnrLocal,
                                                          bearingValid);
                             break;
                         default:
@@ -541,8 +549,6 @@ PARAM_GROUP_START(nav)
     PARAM_ADD(PARAM_FLOAT,               minLight,    &minTotalLight)
     PARAM_ADD(PARAM_UINT8,               minMapPts,   &fusionMinMapPoints)
     PARAM_ADD(PARAM_UINT8,               bearingHold, &bearingHoldFrames)
-    PARAM_ADD(PARAM_FLOAT,               alignFwdTol, &navAlignFwdTol)
-    PARAM_ADD(PARAM_FLOAT,               alignFwdSpd, &navAlignFwdSpeed)
     PARAM_ADD(PARAM_FLOAT,               magAlpha,    &magIirAlpha)
 PARAM_GROUP_STOP(nav)
 
