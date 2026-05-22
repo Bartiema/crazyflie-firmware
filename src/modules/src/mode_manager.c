@@ -547,11 +547,13 @@ static void modeTask(void *param)
         /* 6. 100 Hz navigation updates ─────────────────────────────────── */
         if (currentMode == MODE_NAVIGATE) {
 
-            /* SEARCHING: only rotate to scan when we have no bearing at all.
-             * On brief SNR dropouts (bearingInitialized=true) we hold the
-             * last heading so the drone doesn't rotate away from the source
-             * while the signal is temporarily weak. */
-            if (navState == NAV_SEARCHING && !bearingInitialized)
+            /* SEARCHING: always rotate to scan.
+             * Previously this was gated on !bearingInitialized so that brief
+             * SNR dropouts would hold the last heading.  That logic is now
+             * handled by NAV_RECOVERING (gradient still reliable → keep moving).
+             * Any time we are genuinely in SEARCHING both bearing and gradient
+             * are gone, so rotation is always the right action. */
+            if (navState == NAV_SEARCHING)
                 spYawDeg = normalizeAngle(spYawDeg + navYawRate * 0.01f);
 
             /* DWELLING: check dwell timer at full 100 Hz resolution */
