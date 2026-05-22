@@ -99,6 +99,7 @@ static float    navFwdSpeed       = 0.20f;
 static float    navSearchFwdSpd   = 0.0f;  /* forward speed during SEARCHING (0 = spin in place) */
 static float    navSearchRadius   = 0.8f;  /* max distance from search origin (m) before reversing */
 static uint32_t pdTimeoutMs       = 500U;
+static float    navDataFreq       = 0.0f;  /* explicit freq for DATA_GATHER mode (0 = use waypoints) */
 
 /* Search-area state: captured on first entry to SEARCHING after each reset. */
 static float searchOriginX   = 0.0f;
@@ -377,8 +378,16 @@ static void modeTask(void *param)
 
         /* 5. Process new spectrum ─────────────────────────────────────────── */
         if (newSpectrum) {
-            float targetFreq = (waypointIndex < waypointCount)
-                               ? waypoints[waypointIndex].freq : 0.0f;
+            /* In DATA_GATHER mode, navDataFreq (set via param) overrides the
+             * waypoint table so the Python script can select the frequency
+             * to monitor without needing an app-memory write. */
+            float targetFreq;
+            if (currentMode == MODE_DATA_GATHER && navDataFreq > 0.0f) {
+                targetFreq = navDataFreq;
+            } else {
+                targetFreq = (waypointIndex < waypointCount)
+                             ? waypoints[waypointIndex].freq : 0.0f;
+            }
 
             /* Frequency change: new waypoint or mission start — reset all state.
              * We do NOT skip this frame: the stale spectrum from the old
@@ -618,6 +627,7 @@ PARAM_GROUP_START(nav)
     PARAM_ADD(PARAM_UINT8,               minMapPts,   &fusionMinMapPoints)
     PARAM_ADD(PARAM_UINT8,               bearingHold, &bearingHoldFrames)
     PARAM_ADD(PARAM_FLOAT,               magAlpha,    &magIirAlpha)
+    PARAM_ADD(PARAM_FLOAT,               dataFreq,    &navDataFreq)
 PARAM_GROUP_STOP(nav)
 
 /* wpNav group kept for Python compatibility (same param names as before) */
