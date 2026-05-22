@@ -100,8 +100,10 @@ static float mapMinDist       = 0.05f;
 /** Map-based: epsilon in weight denominator 1/(d²+eps), avoids 1/0 */
 static float mapWEps          = 0.01f;
 
-/** Map-based: only update a cell if new intensity exceeds old by this */
-static float mapMinImprovement = 0.05f;
+/** Map-based: EMA smoothing factor for cell intensity on revisit.
+ *  0 = always replace with new value, 1 = never update.
+ *  Default 0.5 = equal blend, damping single-frame noise spikes. */
+static float mapSmoothFactor  = 0.5f;
 
 /** Map grid resolution in metres — one cell per GRID_RES × GRID_RES */
 static float mapGridRes       = 0.05f;
@@ -296,12 +298,13 @@ void wlsGradientControllerAddMapPoint(float x, float y, float intensity)
     /* Search for existing cell */
     for (int i = 0; i < mapSize; i++) {
         if (mapCells[i].gx == gx && mapCells[i].gy == gy) {
-            /* Update only if new intensity is meaningfully better */
-            if (intensity > mapCells[i].intensity + mapMinImprovement) {
-                mapCells[i].x         = x;
-                mapCells[i].y         = y;
-                mapCells[i].intensity = intensity;
-            }
+            /* EMA blend — damps single-frame SNR spikes while converging
+             * toward the true local intensity over multiple revisits.
+             * mapSmoothFactor=0 → always replace, 1 → never update. */
+            mapCells[i].intensity = mapSmoothFactor * mapCells[i].intensity
+                                  + (1.0f - mapSmoothFactor) * intensity;
+            mapCells[i].x = x;
+            mapCells[i].y = y;
             xSemaphoreGive(mapMutex);
             return;
         }
@@ -475,6 +478,7 @@ PARAM_GROUP_START(wlsCtrl)
     PARAM_ADD(PARAM_FLOAT,  mapR2,      &mapR2Threshold)
     PARAM_ADD(PARAM_FLOAT,  mapMaxDist, &mapMaxDist)
     PARAM_ADD(PARAM_FLOAT,  mapGridRes, &mapGridRes)
+    PARAM_ADD(PARAM_FLOAT,  mapSmooth,  &mapSmoothFactor)
     PARAM_ADD_WITH_CALLBACK(PARAM_UINT8, clearMap, &clearMapFlag, clearMapCallback)
 PARAM_GROUP_STOP(wlsCtrl)
 
