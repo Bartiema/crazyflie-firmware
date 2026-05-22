@@ -93,10 +93,17 @@ static float    magIirAlpha         = 0.5f;
 static float    smoothMag[BA_SENSOR_COUNT];
 
 /* ── Flight parameters ──────────────────────────────────────────────────── */
-static float    navAltTarget    = 1.0f;
-static float    navMaxVel       = 0.30f;
-static float    navFwdSpeed     = 0.20f;
-static uint32_t pdTimeoutMs     = 500U;
+static float    navAltTarget      = 1.0f;
+static float    navMaxVel         = 0.30f;
+static float    navFwdSpeed       = 0.20f;
+static float    navSearchFwdSpd   = 0.0f;  /* forward speed during SEARCHING (0 = spin in place) */
+static float    navSearchRadius   = 0.8f;  /* max distance from search origin (m) before reversing */
+static uint32_t pdTimeoutMs       = 500U;
+
+/* Search-area state: captured on first entry to SEARCHING after each reset. */
+static float searchOriginX   = 0.0f;
+static float searchOriginY   = 0.0f;
+static bool  searchOriginSet = false;
 
 /* ── Default mission ────────────────────────────────────────────────────── */
 static const NavWaypoint DEFAULT_MISSION[] = {
@@ -161,6 +168,7 @@ static void resetActiveState(void)
     bearingInvalidFrames = 0;
     spFwdVel             = 0.0f;
     memset(smoothMag, 0, sizeof(smoothMag));   /* clear IIR state on freq change */
+    searchOriginSet = false;                   /* re-capture search origin on next SEARCHING entry */
     wlsGradientControllerClearMap();
     pdFftAnalyzerResetAccumulator();
     memset(logChSnr, 0, sizeof(logChSnr));
@@ -171,14 +179,36 @@ static void resetActiveState(void)
 
 /* ── Navigation state handlers ──────────────────────────────────────────── */
 
-/* No valid bearing — rotate continuously to scan for the target.
- * spYawDeg is advanced in the 100 Hz loop; this handler only checks
- * whether the signal has been acquired. */
-static NavState handleSearching(float snr, bool valid)
+/* No valid bearing — rotate while covering a bounded search area.
+ * Captures the position on first entry as the search origin.
+ * Moves forward at navSearchFwdSpd until navSearchRadius is reached,
+ * then reverses back — combined with yaw rotation this traces a
+ * bounded spiral/figure-of-eight pattern.
+ * Set navSearchFwdSpd = 0 to spin in place (original behaviour).
+ * spYawDeg is advanced in the 100 Hz loop. */
+static NavState handleSearching(float snr, bool valid, float posX, float posY)
 {
-    spFwdVel = 0.0f;
-    if (valid && snr > navAcqSnr)
+    if (valid && snr > navAcqSnr) {
+        searchOriginSet = false;   /* reset so next SEARCHING re-anchors */
         return NAV_ALIGNING;
+    }
+
+    if (navSearchFwdSpd > 0.0f) {
+        /* Anchor the search area on first entry */
+        if (!searchOriginSet) {
+            searchOriginX   = posX;
+            searchOriginY   = posY;
+            searchOriginSet = true;
+        }
+        /* Move outward until radius is hit, then reverse */
+        float dx   = posX - searchOriginX;
+        float dy   = posY - searchOriginY;
+        float dist = sqrtf(dx * dx + dy * dy);
+        spFwdVel = (dist < navSearchRadius) ? navSearchFwdSpd : -navSearchFwdSpd;
+    } else {
+        spFwdVel = 0.0f;   /* spin-in-place mode */
+    }
+
     return NAV_SEARCHING;
 }
 
@@ -486,7 +516,8 @@ static void modeTask(void *param)
 
                     switch (navState) {
                         case NAV_SEARCHING:
-                            navState = handleSearching(maxSnrLocal, bearingValid);
+                            navState = handleSearching(maxSnrLocal, bearingValid,
+                                                       posX, posY);
                             break;
                         case NAV_ALIGNING:
                             navState = handleAligning(headingErr, maxSnrLocal,
@@ -574,6 +605,8 @@ PARAM_GROUP_START(nav)
     PARAM_ADD(PARAM_FLOAT,               altTarget,   &navAltTarget)
     PARAM_ADD(PARAM_FLOAT,               maxVel,      &navMaxVel)
     PARAM_ADD(PARAM_FLOAT,               fwdSpeed,    &navFwdSpeed)
+    PARAM_ADD(PARAM_FLOAT,               searchSpd,   &navSearchFwdSpd)
+    PARAM_ADD(PARAM_FLOAT,               searchR,     &navSearchRadius)
     PARAM_ADD(PARAM_UINT32,              pdTimeout,   &pdTimeoutMs)
     PARAM_ADD(PARAM_FLOAT,               wBearing,    &fusionWBearing)
     PARAM_ADD(PARAM_FLOAT,               wGradient,   &fusionWGradient)
