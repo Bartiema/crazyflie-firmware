@@ -14,7 +14,7 @@
  *
  * Each handler sets spFwdVel / spYawDeg and returns the next NavState.
  * The 100 Hz task injects the live setpoint every tick; FFT-based state
- * updates happen at ~2 Hz (every PD_FFT_AVERAGES hops).
+ * updates happen at ~2 Hz (every pdFftAverages hops).
  *
  * Yaw control uses absolute angle setpoints throughout so the CrazyFlie's
  * tuned position controller handles the actual rotation.  spYawDeg is set
@@ -628,6 +628,8 @@ PARAM_GROUP_START(nav)
     PARAM_ADD(PARAM_UINT8,               bearingHold, &bearingHoldFrames)
     PARAM_ADD(PARAM_FLOAT,               magAlpha,    &magIirAlpha)
     PARAM_ADD(PARAM_FLOAT,               dataFreq,    &navDataFreq)
+    PARAM_ADD(PARAM_UINT8,               fftAvg,      &pdFftAverages)
+    PARAM_ADD(PARAM_UINT8,               medianFloor, &pdNoiseFloorMedian)
 PARAM_GROUP_STOP(nav)
 
 /* wpNav group kept for Python compatibility (same param names as before) */

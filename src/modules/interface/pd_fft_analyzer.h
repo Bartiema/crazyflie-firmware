@@ -37,9 +37,18 @@
 /** Samples between successive FFT runs (50% overlap). */
 #define PD_FFT_HOP_SIZE   (PD_FFT_SIZE / 2)
 
-/** Number of overlapping FFT frames averaged before publishing the spectrum.
- *  SNR improves by √PD_FFT_AVERAGES. Set to 1 to disable averaging. */
-#define PD_FFT_AVERAGES   2
+/** Default number of overlapping FFT frames averaged before publishing the
+ *  spectrum. SNR improves by √pdFftAverages. Set to 1 to disable averaging. */
+#define PD_FFT_AVERAGES_DEFAULT   2
+
+/** Runtime-configurable Welch averaging count (clamped to >= 1 by the
+ *  setter). Exposed as the `nav.fftAvg` parameter. */
+extern uint8_t pdFftAverages;
+
+/** Runtime-configurable noise-floor estimator: 0 = mean over excluded-bin
+ *  set, 1 = median (default, robust to spikes). Exposed as the
+ *  `nav.medianFloor` parameter. */
+extern uint8_t pdNoiseFloorMedian;
 
 /**
  * Result of a single-frequency analysis for one channel.
@@ -85,7 +94,7 @@ bool pdFftAnalyzerWindowReady(void);
  * Thread-safe: takes an internal mutex.
  *
  * Returns true when a freshly averaged spectrum has been published (i.e. every
- * PD_FFT_AVERAGES hops). Returns false on intermediate hops where the spectrum
+ * pdFftAverages hops). Returns false on intermediate hops where the spectrum
  * is still accumulating. Callers should only process the spectrum on true.
  */
 bool pdFftAnalyzerRun(void);

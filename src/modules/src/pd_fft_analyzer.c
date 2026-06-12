@@ -54,7 +54,12 @@ static float fftOut[PD_FFT_SIZE];                         /* scratch: complex ou
 static float tempMag[PD_FFT_SIZE / 2];                    /* scratch: per-hop magnitude     */
 static float spectrum[PD_FFT_CHANNELS][PD_FFT_SIZE / 2];  /* published averaged spectra     */
 static float spectrumAccum[PD_FFT_CHANNELS][PD_FFT_SIZE / 2]; /* accumulation across hops  */
-static int   accumCount = 0;   /* hops accumulated so far toward PD_FFT_AVERAGES */
+static int   accumCount = 0;   /* hops accumulated so far toward pdFftAverages */
+
+/* Runtime filter-pipeline switches — see pd_fft_analyzer.h for descriptions.
+ * Exposed as `nav.fftAvg` / `nav.medianFloor` params in mode_manager.c. */
+uint8_t pdFftAverages       = PD_FFT_AVERAGES_DEFAULT;
+uint8_t pdNoiseFloorMedian  = 1;
 
 /* Scratch buffer for median noise floor — avoids stack allocation */
 static float noiseBins[PD_FFT_SIZE / 2];
@@ -199,8 +204,10 @@ bool pdFftAnalyzerRun(void)
     accumCount++;
     samplesSinceRun = 0;
 
-    /* Publish averaged spectrum once enough hops have been accumulated */
-    if (accumCount >= PD_FFT_AVERAGES) {
+    /* Publish averaged spectrum once enough hops have been accumulated.
+     * pdFftAverages == 1 publishes every hop (Welch averaging disabled). */
+    uint8_t averages = (pdFftAverages < 1) ? 1 : pdFftAverages;
+    if (accumCount >= averages) {
         float scale = 1.0f / (float)accumCount;
         for (int ch = 0; ch < PD_FFT_CHANNELS; ch++) {
             arm_scale_f32(spectrumAccum[ch], scale, spectrum[ch], PD_FFT_SIZE / 2);
@@ -264,11 +271,12 @@ void pdFftAnalyzerGetFrequency(int ch, float target_freq_hz,
         if (spectrum[ch][i] > peak) peak = spectrum[ch][i];
     }
 
-    /* ── Calculate noise floor (median) ────────────────────────────────────
-     * Collect all non-excluded bins then take the median.  The median is
-     * robust against single-frequency spikes (motor harmonics, mains
-     * interference) that would inflate a mean-based estimate.              */
-    int noiseBinCount = 0;
+    /* ── Calculate noise floor (mean or median, via pdNoiseFloorMedian) ─────
+     * Collect all non-excluded bins then take either the mean or the median.
+     * The median is robust against single-frequency spikes (motor harmonics,
+     * mains interference) that would inflate a mean-based estimate.        */
+    int   noiseBinCount = 0;
+    float noiseSum      = 0.0f;
 
     for (int i = 1; i < half; i++) {
         bool excluded = false;
@@ -280,16 +288,22 @@ void pdFftAnalyzerGetFrequency(int ch, float target_freq_hz,
             }
         }
         if (!excluded) {
-            noiseBins[noiseBinCount++] = spectrum[ch][i];
+            noiseBins[noiseBinCount] = spectrum[ch][i];
+            noiseSum += spectrum[ch][i];
+            noiseBinCount++;
         }
     }
 
     float noise_avg = 1.0f;
     if (noiseBinCount > 0) {
-        qsort(noiseBins, noiseBinCount, sizeof(float), floatAscCmp);
-        noise_avg = (noiseBinCount & 1)
-            ? noiseBins[noiseBinCount / 2]
-            : 0.5f * (noiseBins[noiseBinCount / 2 - 1] + noiseBins[noiseBinCount / 2]);
+        if (pdNoiseFloorMedian) {
+            qsort(noiseBins, noiseBinCount, sizeof(float), floatAscCmp);
+            noise_avg = (noiseBinCount & 1)
+                ? noiseBins[noiseBinCount / 2]
+                : 0.5f * (noiseBins[noiseBinCount / 2 - 1] + noiseBins[noiseBinCount / 2]);
+        } else {
+            noise_avg = noiseSum / (float)noiseBinCount;
+        }
     }
 
     result->magnitude = peak;
